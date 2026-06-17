@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https://assets.petdex.dev data:; style-src 'self'; script-src 'self';">
+    <title>Vibe Pet Desktop Pet</title>
+    <link rel="stylesheet" href="pet-overlay.css">
+  </head>
+  <body>
+    <main class="desktop-pet-root" id="desktopPetRoot" data-state="idle">
+      <section class="desktop-pet-shell" aria-live="polite">
+        <div class="desktop-pet-figure" id="desktopPetFigure"></div>
+        <div class="desktop-pet-chip">
+          <strong id="desktopPetTitle">Vibe Pet</strong>
+          <span id="desktopPetState">Idle</span>
+        </div>
+      </section>
+    </main>
+    <script src="pet-overlay.js"></script>
+  </body>
+</html>

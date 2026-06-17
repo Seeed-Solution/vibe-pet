@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https://img.shields.io https://assets.petdex.dev data:; style-src 'self'; script-src 'self';">
+    <title>Vibe Pet</title>
+    <link rel="icon" href="../host/public/logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="../host/public/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="status-band">
+        <div class="brand-block">
+          <div class="brand-heading">
+            <img class="app-logo" src="../host/public/logo.svg" alt="Vibe Pet logo">
+            <h1>Vibe Pet</h1>
+          </div>
+          <a class="github-link" href="https://github.com/wangzongming/vibe-pet" target="_blank" rel="noreferrer" aria-label="Vibe Pet GitHub repository" data-i18n-aria-label="app.githubAria">
+            <span class="github-stars" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="m12 3 2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7L6.8 19l1-5.8-4.2-4.1 5.8-.8L12 3Z"></path>
+              </svg>
+              <span id="githubStarsCount">Stars</span>
+            </span>
+          </a>
+        </div>
+        <div class="status-actions">
+          <div class="top-toolbar" aria-label="Controls">
+            <div class="top-setting language-row" title="Language" data-i18n-title="label.language">
+              <label class="sr-only" for="languageSelect" data-i18n="label.language">Language</label>
+              <span class="top-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="8"></circle>
+                  <path d="M4 12h16M12 4c2.2 2.1 3.2 4.8 3.2 8s-1 5.9-3.2 8M12 4C9.8 6.1 8.8 8.8 8.8 12s1 5.9 3.2 8"></path>
+                </svg>
+              </span>
+              <select id="languageSelect" data-language-select aria-label="Language" data-i18n-aria-label="label.language">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+              </select>
+            </div>
+            <div class="top-setting theme-row" title="Theme" data-i18n-title="label.theme">
+              <div class="theme-toggle" role="group" aria-label="Theme" data-i18n-aria-label="label.theme">
+                <button class="theme-option" data-theme-option="day" type="button" aria-pressed="true" title="Day" data-i18n-title="theme.day">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="4"></circle>
+                    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+                  </svg>
+                  <span class="sr-only" data-i18n="theme.day">Day</span>
+                </button>
+                <button class="theme-option" data-theme-option="night" type="button" aria-pressed="false" title="Night" data-i18n-title="theme.night">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 14.5A7.4 7.4 0 0 1 9.5 4 8.1 8.1 0 1 0 20 14.5Z"></path>
+                  </svg>
+                  <span class="sr-only" data-i18n="theme.night">Night</span>
+                </button>
+              </div>
+            </div>
+            <button id="connectBtn" type="button">
+              <svg class="top-menu-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 7h8a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3v-4a3 3 0 0 1 3-3Z"></path>
+                <path d="M9 17v2M15 17v2M9 5V3M15 5V3M9.2 12h.1M14.7 12h.1"></path>
+              </svg>
+              <span id="connectBtnLabel" data-i18n="connection.connectDevice">Connect device</span>
+            </button>
+            <button id="flashBtn" type="button">
+              <svg class="top-menu-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M13 2 5 13h6l-1 9 8-12h-6l1-8Z"></path>
+              </svg>
+              <span data-i18n="firmware.flashButton">Flash firmware</span>
+            </button>
+            <button id="statusPanelBtn" type="button" aria-expanded="false" aria-controls="statusPanelModal">
+              <svg class="top-menu-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 6h16M4 12h16M4 18h16"></path>
+                <path d="M8 6v.01M12 12v.01M16 18v.01"></path>
+              </svg>
+              <span data-i18n="panel.open">Status</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="pet-stage pet-grid-stage" aria-label="desktop pet grid" data-i18n-aria-label="pet.gridAria">
+          <div class="pet-grid" id="petGrid"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="status-panel-modal" id="statusPanelModal" hidden>
+      <section class="panel status-panel-dialog" role="dialog" aria-modal="true" aria-labelledby="statusPanelTitle">
+          <header class="status-panel-head">
+            <strong id="statusPanelTitle" data-i18n="panel.title">Status panel</strong>
+            <button class="status-panel-close" id="statusPanelCloseBtn" type="button" aria-label="Close" data-i18n-aria-label="action.close">×</button>
+          </header>
+          <div class="state-row telemetry-row">
+            <span data-i18n="label.deviceOutput">Device output</span>
+            <strong id="stateName">idle</strong>
+          </div>
+          <div class="state-row telemetry-row">
+            <span data-i18n="label.agent">Agent</span>
+            <strong id="agentName">agent</strong>
+          </div>
+          <div class="state-row telemetry-row">
+            <span data-i18n="label.event">Event</span>
+            <strong id="eventName">-</strong>
+          </div>
+          <div class="state-row">
+            <span data-i18n="label.activeSessions">Active sessions</span>
+            <strong id="activeCount">0</strong>
+          </div>
+          <div class="state-row">
+            <span data-i18n="label.bridgePort">Bridge port</span>
+            <strong id="bridgePort">-</strong>
+          </div>
+
+          <div class="device-picker" id="devicePicker" hidden>
+            <div class="device-picker-head">
+              <strong data-i18n="device.choose">Choose device</strong>
+              <button id="cancelDeviceBtn" type="button" data-i18n="device.cancel">Cancel</button>
+            </div>
+            <div class="device-list" id="deviceList"></div>
+          </div>
+
+          <label class="select-label" for="testState" data-i18n="label.testState">Test state</label>
+          <div class="test-row">
+            <select id="testState">
+              <option value="idle" data-i18n="state.idle">Idle</option>
+              <option value="thinking" data-i18n="state.thinking">Thinking</option>
+              <option value="working" data-i18n="state.working">Working</option>
+              <option value="juggling" data-i18n="state.juggling">Handling multiple tasks</option>
+              <option value="building" data-i18n="state.building">Building</option>
+              <option value="attention" data-i18n="state.attention">Needs attention</option>
+              <option value="notification" data-i18n="state.notification">Notification</option>
+              <option value="error" data-i18n="state.error">Error</option>
+              <option value="sweeping" data-i18n="state.sweeping">Cleaning context</option>
+              <option value="sleeping" data-i18n="state.sleeping">Sleeping</option>
+            </select>
+            <button id="testBtn" type="button" data-i18n="action.send">Send</button>
+          </div>
+
+          <pre id="packetPreview">{}</pre>
+      </section>
+    </div>
+
+    <div class="pet-modal" id="petPickerModal" hidden>
+      <section class="pet-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="petPickerTitle">
+        <header class="pet-modal-head">
+          <div class="pet-modal-title">
+            <strong id="petPickerTitle" data-i18n="pet.modalTitle">Switch character</strong>
+            <a id="petPickerSource" href="https://github.com/crafter-station/petdex" target="_blank" rel="noreferrer">Character source: github.com/crafter-station/petdex</a>
+          </div>
+          <button class="pet-modal-close" id="petPickerCloseBtn" type="button" aria-label="Close" data-i18n-aria-label="action.close">×</button>
+        </header>
+
+        <div class="pet-modal-tools">
+          <input id="petPickerSearch" class="pet-picker-search" type="search" placeholder="Filter characters" data-i18n-placeholder="pet.filterPlaceholder">
+          <select id="petPickerKind" aria-label="Character type" data-i18n-aria-label="pet.kindAria">
+            <option value="" data-i18n="pet.allSources">All sources</option>
+          </select>
+          <button id="petPickerRefreshBtn" type="button" data-i18n="pet.refresh">Refresh</button>
+        </div>
+
+        <div class="pet-modal-status" id="petPickerStatus" data-i18n="pet.loading">Loading</div>
+        <div class="pet-choice-grid" id="petChoiceGrid"></div>
+      </section>
+    </div>
+
+    <div class="firmware-modal" id="firmwareModal" hidden>
+      <section class="firmware-dialog" role="dialog" aria-modal="true" aria-labelledby="firmwareTitle">
+        <header class="firmware-head">
+          <div>
+            <strong id="firmwareTitle" data-i18n="firmware.title">Flash firmware</strong>
+            <p data-i18n="firmware.subtitle">Choose a target and serial port, then flash the built firmware.</p>
+          </div>
+          <button class="firmware-close" id="firmwareCloseBtn" type="button" aria-label="Close" data-i18n-aria-label="action.close">×</button>
+        </header>
+
+        <div class="firmware-form">
+          <label for="firmwareTarget" data-i18n="firmware.target">Target</label>
+          <select id="firmwareTarget"></select>
+          <label for="firmwarePort" data-i18n="firmware.port">Serial port</label>
+          <div class="firmware-port-row">
+            <select id="firmwarePort"></select>
+            <button id="firmwareRefreshPortsBtn" type="button" data-i18n="firmware.refreshPorts">Refresh</button>
+          </div>
+        </div>
+
+        <div class="firmware-actions">
+          <button id="firmwareStartBtn" type="button" data-i18n="firmware.start">Flash</button>
+          <button id="firmwareCancelBtn" type="button" disabled data-i18n="firmware.cancel">Cancel flashing</button>
+        </div>
+
+        <div class="firmware-status" id="firmwareStatus" data-i18n="firmware.ready">Ready</div>
+        <pre class="firmware-log" id="firmwareLog"></pre>
+      </section>
+    </div>
+
+    <script src="../host/public/i18n.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

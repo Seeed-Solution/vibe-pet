@@ -1,0 +1,13 @@
+{
+  "id": "code-pet",
+  "name": "Vibe Pet",
+  "description": "Forward OpenClaw lifecycle and tool-state events to Vibe Pet.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "vibe-pet",
+  "productName": "Vibe Pet",
+  "version": "0.1.0",
+  "description": "Hardware desktop pet bridge for AI agents over BLE and Wi-Fi.",
+  "main": "src/desktop/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "postinstall": "node src/scripts/install-hooks.js --silent",
+    "prestart": "node src/scripts/install-hooks.js --silent",
+    "start": "electron .",
+    "predev": "node src/scripts/install-hooks.js --silent",
+    "dev": "electron . --verbose --watch",
+    "icons": "node src/scripts/generate-icons.js",
+    "bridge:web": "node src/host/index.js",
+    "bridge:web:dev": "node src/host/index.js --verbose",
+    "setup": "node src/scripts/setup.js",
+    "package": "node src/scripts/package.js",
+    "package:current": "node src/scripts/package.js --platform current",
+    "package:mac": "node src/scripts/package.js --platform darwin",
+    "package:linux": "node src/scripts/package.js --platform linux",
+    "package:win": "node src/scripts/package.js --platform win32",
+    "package:all": "node src/scripts/package.js --platform all --arch x64",
+    "install:hooks": "node src/scripts/install-hooks.js",
+    "uninstall:hooks": "node src/scripts/install-hooks.js --uninstall",
+    "check": "node src/scripts/check.js"
+  },
+  "keywords": [
+    "desktop-pet",
+    "wio-terminal",
+    "ble",
+    "codex",
+    "cursor",
+    "windsurf"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wangzongming/vibe-pet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wangzongming/vibe-pet/issues"
+  },
+  "homepage": "https://github.com/wangzongming/vibe-pet#readme",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.0.1",
+    "electron": "^42.4.0"
+  }
+}

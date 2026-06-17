@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vibe Pet BLE Bridge</title>
+    <link rel="icon" href="/logo.svg" type="image/svg+xml">
+    <script>
+      (() => {
+        try {
+          const theme = localStorage.getItem("code-pet-theme") === "night" ? "night" : "day";
+          document.documentElement.dataset.theme = theme;
+        } catch {
+          document.documentElement.dataset.theme = "day";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="status-band">
+        <div class="brand-block">
+          <div class="brand-heading">
+            <img class="app-logo" src="/logo.svg" alt="Vibe Pet logo">
+            <div class="brand-copy">
+              <p class="eyebrow">Vibe Pet</p>
+              <h1 data-i18n="web.title">Hardware Desktop Pet BLE Bridge</h1>
+            </div>
+          </div>
+        </div>
+        <div class="status-actions">
+          <div class="top-toolbar" aria-label="Controls">
+            <div class="top-setting language-row" title="Language" data-i18n-title="label.language">
+              <label class="sr-only" for="languageSelect" data-i18n="label.language">Language</label>
+              <span class="top-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="8"></circle>
+                  <path d="M4 12h16M12 4c2.2 2.1 3.2 4.8 3.2 8s-1 5.9-3.2 8M12 4C9.8 6.1 8.8 8.8 8.8 12s1 5.9 3.2 8"></path>
+                </svg>
+              </span>
+              <select id="languageSelect" data-language-select aria-label="Language" data-i18n-aria-label="label.language">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+              </select>
+            </div>
+            <div class="top-setting theme-row" title="Theme" data-i18n-title="label.theme">
+              <div class="theme-toggle" role="group" aria-label="Theme" data-i18n-aria-label="label.theme">
+                <button class="theme-option" data-theme-option="day" type="button" aria-pressed="true" title="Day" data-i18n-title="theme.day">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="4"></circle>
+                    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+                  </svg>
+                  <span class="sr-only" data-i18n="theme.day">Day</span>
+                </button>
+                <button class="theme-option" data-theme-option="night" type="button" aria-pressed="false" title="Night" data-i18n-title="theme.night">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 14.5A7.4 7.4 0 0 1 9.5 4 8.1 8.1 0 1 0 20 14.5Z"></path>
+                  </svg>
+                  <span class="sr-only" data-i18n="theme.night">Night</span>
+                </button>
+              </div>
+            </div>
+            <button id="connectBtn" type="button" data-i18n="connection.connectDevice">Connect device</button>
+            <button id="statusPanelBtn" type="button" aria-expanded="false" aria-controls="statusPanelModal" data-i18n="panel.open">Status</button>
+          </div>
+          <div class="connection" id="connectionState" data-i18n="connection.disconnected">Disconnected</div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="pet-stage" aria-label="desktop pet preview" data-i18n-aria-label="pet.previewAria">
+          <div class="pet" id="petPreview">
+            <div class="antenna"></div>
+            <div class="face">
+              <span class="eye left"></span>
+              <span class="eye right"></span>
+              <span class="mouth"></span>
+            </div>
+            <div class="body"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="status-panel-modal" id="statusPanelModal" hidden>
+      <section class="panel status-panel-dialog" role="dialog" aria-modal="true" aria-labelledby="statusPanelTitle">
+          <header class="status-panel-head">
+            <strong id="statusPanelTitle" data-i18n="panel.title">Status panel</strong>
+            <button class="status-panel-close" id="statusPanelCloseBtn" type="button" aria-label="Close" data-i18n-aria-label="action.close">×</button>
+          </header>
+          <div class="state-row telemetry-row">
+            <span data-i18n="label.deviceOutput">Device output</span>
+            <strong id="stateName">idle</strong>
+          </div>
+          <div class="state-row telemetry-row">
+            <span data-i18n="label.agent">Agent</span>
+            <strong id="agentName">agent</strong>
+          </div>
+          <div class="state-row telemetry-row">
+            <span data-i18n="label.event">Event</span>
+            <strong id="eventName">-</strong>
+          </div>
+          <div class="state-row">
+            <span data-i18n="label.activeSessions">Active sessions</span>
+            <strong id="activeCount">0</strong>
+          </div>
+          <label class="select-label" for="testState" data-i18n="label.testState">Test state</label>
+          <div class="test-row">
+            <select id="testState">
+              <option value="idle" data-i18n="state.idle">Idle</option>
+              <option value="thinking" data-i18n="state.thinking">Thinking</option>
+              <option value="working" data-i18n="state.working">Working</option>
+              <option value="juggling" data-i18n="state.juggling">Handling multiple tasks</option>
+              <option value="building" data-i18n="state.building">Building</option>
+              <option value="attention" data-i18n="state.attention">Needs attention</option>
+              <option value="notification" data-i18n="state.notification">Notification</option>
+              <option value="error" data-i18n="state.error">Error</option>
+              <option value="sweeping" data-i18n="state.sweeping">Cleaning context</option>
+              <option value="sleeping" data-i18n="state.sleeping">Sleeping</option>
+            </select>
+            <button id="testBtn" type="button" data-i18n="action.send">Send</button>
+          </div>
+
+          <pre id="packetPreview">{}</pre>
+      </section>
+    </div>
+    <script src="/i18n.js"></script>
+    <script src="/bridge.js"></script>
+  </body>
+</html>
