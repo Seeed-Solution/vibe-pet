@@ -121,8 +121,8 @@ function createServer(hub, options) {
       serveStatic(res, "styles.css");
       return;
     }
-    if (req.method === "GET" && url.pathname === "/logo.svg") {
-      serveStatic(res, "logo.svg");
+    if (req.method === "GET" && url.pathname === "/logo.png") {
+      serveStatic(res, "logo.png");
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/protocol") {

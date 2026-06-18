@@ -26,9 +26,10 @@ const PRELOAD_JS = path.join(__dirname, "preload.js");
 const DESKTOP_ASSET_DIR = path.join(__dirname, "assets");
 const APP_ICON_BASE = path.join(DESKTOP_ASSET_DIR, "app-icon");
 const APP_ICON_PNG = `${APP_ICON_BASE}.png`;
+const APP_ICON_ICNS = `${APP_ICON_BASE}.icns`;
 const APP_ICON_ICO = `${APP_ICON_BASE}.ico`;
 const TRAY_ICON_PNG = path.join(DESKTOP_ASSET_DIR, "tray-icon.png");
-const LOGO_SVG = path.join(__dirname, "..", "host", "public", "logo.svg");
+const LOGO_PNG = path.join(__dirname, "..", "host", "public", "logo.png");
 const HOST_DIR = path.join(__dirname, "..", "host");
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const PET_OVERLAY_WIDTH = 172;
@@ -213,30 +214,31 @@ function firstExistingPath(paths) {
 
 function appWindowIconPath() {
   if (process.platform === "win32") {
-    return firstExistingPath([APP_ICON_ICO, APP_ICON_PNG, LOGO_SVG]);
+    return firstExistingPath([APP_ICON_ICO, APP_ICON_PNG, LOGO_PNG]);
   }
-  return firstExistingPath([APP_ICON_PNG, LOGO_SVG]);
+  if (process.platform === "darwin") {
+    return firstExistingPath([APP_ICON_ICNS, APP_ICON_PNG, LOGO_PNG]);
+  }
+  return firstExistingPath([APP_ICON_PNG, LOGO_PNG]);
 }
 
 function iconImage(paths, size) {
   const imagePath = firstExistingPath(paths);
-  let image = imagePath ? nativeImage.createFromPath(imagePath) : nativeImage.createEmpty();
-
-  if (image.isEmpty() && fs.existsSync(LOGO_SVG)) {
-    const svg = fs.readFileSync(LOGO_SVG, "utf8");
-    image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
-  }
+  const image = imagePath ? nativeImage.createFromPath(imagePath) : nativeImage.createEmpty();
 
   if (!size || image.isEmpty()) return image;
   return image.resize({ width: size, height: size, quality: "best" });
 }
 
 function appIconImage(size) {
-  return iconImage([APP_ICON_PNG, LOGO_SVG], size);
+  if (process.platform === "darwin") {
+    return iconImage([APP_ICON_ICNS, APP_ICON_PNG, LOGO_PNG], size);
+  }
+  return iconImage([APP_ICON_PNG, LOGO_PNG], size);
 }
 
 function trayIconImage(size) {
-  return iconImage([TRAY_ICON_PNG, APP_ICON_PNG, LOGO_SVG], size);
+  return iconImage([TRAY_ICON_PNG, APP_ICON_PNG, LOGO_PNG], size);
 }
 
 function setupAppIcon() {
@@ -814,7 +816,7 @@ function reloadMode(filePath) {
   if (normalized === path.join(__dirname, "pet-overlay.js")) return "renderer";
   if (normalized === path.join(HOST_DIR, "public", "styles.css")) return "renderer";
   if (normalized === path.join(HOST_DIR, "public", "i18n.js")) return "renderer";
-  if (normalized === path.join(HOST_DIR, "public", "logo.svg")) return "renderer";
+  if (normalized === path.join(HOST_DIR, "public", "logo.png")) return "renderer";
   return "restart";
 }
 
