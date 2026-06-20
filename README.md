@@ -42,12 +42,7 @@ Vibe Pet is a hardware desktop pet project for AI coding agents. It watches live
 - Multi-agent pet view: every active editor or AI coding agent gets its own pet card instead of sharing one combined state.
 - Real desktop pets: pets from the main window are also spawned onto the desktop, and each one can be dragged independently.
 - Hardware sync: send state over Bluetooth to devices such as Wio Terminal or ESP-AI Mini Ext.
-- Live output: show recent AI coding agent output inside each pet card with automatic scrolling.
-- Session titles: display the current session or workspace title so multiple Cursor, Codex, or Windsurf windows are easy to tell apart.
 - Character switching: choose a character from [Petdex](https://github.com/crafter-station/petdex) by default or use a custom character you made.
-- Firmware flashing: flash Wio Terminal and ESP32-S3 firmware directly from the desktop app.
-- Multilingual UI: Chinese, English, and Japanese are supported. English is the default.
-- Day and night themes: switch between light and night modes.
 
 ## Supported Agents
 
