@@ -5,9 +5,9 @@
 <h1 align="center">Vibe Pet</h1>
 
 <p align="center">
-  <strong>AI コーディングエージェントのためのハードウェアデスクトップペット。</strong><br>
-  <strong>数千種類のキャラクターから選ぶことも、ワンクリックで自分のキャラクターを作ることもできます。</strong><br>
-  Codex、Cursor、Windsurf などのエージェントを、デスクトップとハードウェア上のライブコンパニオンにします。
+  <strong>AI コーディングエージェントのためのハードウェアデスクトップペット</strong><br>
+  <strong>数千種類のキャラクターから選ぶことも、ワンクリックで自分のキャラクターを作ることもできます</strong><br>
+  Codex、Cursor、Windsurf などのエージェントを、デスクトップとハードウェア上のライブコンパニオンにします
 </p>
 
 <p align="center">

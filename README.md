@@ -5,9 +5,9 @@
 <h1 align="center">Vibe Pet</h1>
 
 <p align="center">
-  <strong>Hardware desktop pets for your AI coding agents.</strong><br>
-  <strong>Choose from thousands of characters or create your own in one click.</strong><br>
-  Turn Codex, Cursor, Windsurf, and other agents into live companions across desktop and hardware.
+  <strong>Hardware desktop pets for your AI coding agents</strong><br>
+  <strong>Choose from thousands of characters or create your own in one click</strong><br>
+  Turn Codex, Cursor, Windsurf, and other agents into live companions across desktop and hardware
 </p>
 
 <p align="center">

@@ -5,9 +5,9 @@
 <h1 align="center">Vibe Pet</h1>
 
 <p align="center">
-  <strong>给 AI 编程助手准备的桌宠。</strong><br>
+  <strong>给 AI 编程助手准备的桌宠</strong><br>
   <strong>几千款形象任你选择或者一键制作自己的形象</strong><br>
-  把 Codex、Cursor、Windsurf 和其他助手变成出现在桌面与硬件上的实时伙伴。
+  把 Codex、Cursor、Windsurf 和其他助手变成出现在桌面与硬件上的实时伙伴
 </p>
 
 <p align="center">
