@@ -27,6 +27,8 @@ const PETDEX_REPO_URL = "https://github.com/crafter-station/petdex";
 const RUNTIME_PATH = path.join(os.homedir(), ".code-pet", "runtime.json");
 const ANALYTICS_STATE_PATH = path.join(os.homedir(), ".code-pet", "analytics.json");
 const HOOK_RUNNER_PATH = path.join(os.homedir(), ".code-pet", process.platform === "win32" ? "hook-runner.cmd" : "hook-runner");
+const HOOK_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const HOOK_SYNC_MIN_INTERVAL_MS = 30 * 1000;
 const ANALYTICS_PROVIDER = "tencent-rum";
 const DEFAULT_TENCENT_RUM_ID = "3oLdoCL4jZnGkgvoYp";
 const DEFAULT_TENCENT_RUM_HOST_URL = "https://aegis.qq.com";
@@ -75,40 +77,24 @@ const FIRMWARE_TARGETS = {
   },
   esp_ai_mini_ext_tft: {
     id: "esp_ai_mini_ext_tft",
-    name: "ESP-AI Mini Ext TFT",
+    name: "ESP-AI-MINI AI开发套件",
     projectDir: firmwareProject("esp-ai-mini-ext-tft-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  esp32s3: {
-    id: "esp32s3",
-    name: "ESP-AI Mini Ext Status LED",
-    projectDir: firmwareProject("esp-ai-mini-ext-status"),
     flasher: "esp",
     firmwareFile: MAIN_BIN_NAME,
     flashAddress: 0x0,
   },
   esp_ai_common_3_tft: {
     id: "esp_ai_common_3_tft",
-    name: "ESP-AI Common 3.0.0 TFT",
-    projectDir: firmwareProject("esp-ai-common-3-tft-code-pet"),
+    name: "ESP-AI v3 开发板",
+    projectDir: firmwareProject("esp-ai-v3-tft-code-pet"),
     flasher: "esp",
     firmwareFile: MAIN_BIN_NAME,
     flashAddress: 0x0,
   },
-  esp_ai_diy_esp32s3_oled: {
-    id: "esp_ai_diy_esp32s3_oled",
-    name: "ESP-AI DIY ESP32S3 OLED",
-    projectDir: firmwareProject("esp-ai-diy-esp32s3-oled-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  m5stack_core2: {
-    id: "m5stack_core2",
-    name: "M5Stack Core2",
-    projectDir: firmwareProject("m5stack-core2-code-pet"),
+  esp_ai_common_4_tft: {
+    id: "esp_ai_common_4_tft",
+    name: "ESP-AI v4开发板",
+    projectDir: firmwareProject("esp-ai-v3-tft-code-pet"),
     flasher: "esp",
     firmwareFile: MAIN_BIN_NAME,
     flashAddress: 0x0,
@@ -117,70 +103,6 @@ const FIRMWARE_TARGETS = {
     id: "m5stack_cores3",
     name: "M5Stack CoreS3",
     projectDir: firmwareProject("m5stack-cores3-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  m5stickc_plus2: {
-    id: "m5stickc_plus2",
-    name: "M5StickC Plus2",
-    projectDir: firmwareProject("m5stickc-plus2-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  m5stack_cardputer: {
-    id: "m5stack_cardputer",
-    name: "M5Stack Cardputer",
-    projectDir: firmwareProject("m5stack-cardputer-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  m5stack_atoms3: {
-    id: "m5stack_atoms3",
-    name: "M5Stack AtomS3",
-    projectDir: firmwareProject("m5stack-atoms3-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  lilygo_t_display: {
-    id: "lilygo_t_display",
-    name: "LILYGO T-Display ESP32",
-    projectDir: firmwareProject("lilygo-t-display-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  lilygo_t_display_s3: {
-    id: "lilygo_t_display_s3",
-    name: "LILYGO T-Display S3",
-    projectDir: firmwareProject("lilygo-t-display-s3-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  heltec_wifi_kit_32: {
-    id: "heltec_wifi_kit_32",
-    name: "Heltec WiFi Kit 32",
-    projectDir: firmwareProject("heltec-wifi-kit-32-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  heltec_wifi_kit_8: {
-    id: "heltec_wifi_kit_8",
-    name: "Heltec WiFi Kit 8",
-    projectDir: firmwareProject("heltec-wifi-kit-8-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  wemos_d1_mini_oled: {
-    id: "wemos_d1_mini_oled",
-    name: "WEMOS D1 mini + OLED Shield",
-    projectDir: firmwareProject("wemos-d1-mini-oled-code-pet"),
     flasher: "esp",
     firmwareFile: MAIN_BIN_NAME,
     flashAddress: 0x0,
@@ -216,6 +138,8 @@ let desktopPetWindows = new Map();
 let desktopPetPayloads = new Map();
 let desktopPetPositions = new Map();
 let tray = null;
+let hookSyncTimer = null;
+let lastHookSyncAt = 0;
 let githubStarsCache = {
   value: null,
   updatedAt: 0,
@@ -581,6 +505,7 @@ function setupAppIcon() {
 }
 
 function showMainWindow() {
+  syncHooksForPackagedApp(startupOptions);
   if (!mainWindow || mainWindow.isDestroyed()) {
     if (hub) createMainWindow();
     return;
@@ -652,6 +577,9 @@ function writePackagedHookRunner() {
 
 function syncHooksForPackagedApp(options = {}) {
   if (!app.isPackaged || process.env.VIBE_PET_SKIP_HOOKS === "1") return;
+  const now = Date.now();
+  if (!options.force && now - lastHookSyncAt < HOOK_SYNC_MIN_INTERVAL_MS) return;
+  lastHookSyncAt = now;
 
   const previousRunner = process.env[HOOK_RUNNER_ENV];
   try {
@@ -667,6 +595,21 @@ function syncHooksForPackagedApp(options = {}) {
     if (previousRunner === undefined) delete process.env[HOOK_RUNNER_ENV];
     else process.env[HOOK_RUNNER_ENV] = previousRunner;
   }
+}
+
+function startPackagedHookSync(options = {}) {
+  syncHooksForPackagedApp({ ...options, force: true });
+  if (!app.isPackaged || hookSyncTimer) return;
+  hookSyncTimer = setInterval(() => {
+    syncHooksForPackagedApp(options);
+  }, HOOK_SYNC_INTERVAL_MS);
+  if (typeof hookSyncTimer.unref === "function") hookSyncTimer.unref();
+}
+
+function stopPackagedHookSync() {
+  if (!hookSyncTimer) return;
+  clearInterval(hookSyncTimer);
+  hookSyncTimer = null;
 }
 
 function parseArgs(argv) {
@@ -1525,6 +1468,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
+    syncHooksForPackagedApp(startupOptions);
     if (!mainWindow) {
       createMainWindow();
       return;
@@ -1536,7 +1480,7 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     const options = startupOptions;
     if (process.platform !== "darwin") Menu.setApplicationMenu(null);
-    syncHooksForPackagedApp(options);
+    startPackagedHookSync(options);
     setupAppIcon();
     setupDevicePermissions();
     await selectTencentRumHostUrl();
@@ -1556,6 +1500,7 @@ if (!gotLock) {
   });
 
   app.on("activate", () => {
+    syncHooksForPackagedApp(startupOptions);
     if (!mainWindow && hub) createMainWindow();
   });
 
@@ -1563,5 +1508,8 @@ if (!gotLock) {
     if (process.platform !== "darwin") app.quit();
   });
 
-  app.on("before-quit", stopBackend);
+  app.on("before-quit", () => {
+    stopPackagedHookSync();
+    stopBackend();
+  });
 }

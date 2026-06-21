@@ -133,21 +133,20 @@ built on macOS.
 
 The desktop app does not run PlatformIO when users flash firmware. For app
 flashing, put a flashable `main.bin` in the matching hardware folder, for
-example `src/firmware/m5stack-core2-code-pet/main.bin`. ESP targets are flashed
+example `src/firmware/m5stack-cores3-code-pet/main.bin`. ESP targets are flashed
 with the bundled JavaScript esptool path. Non-ESP targets such as Wio Terminal
 use Arduino CLI when available.
 
 The commands below are for contributors who are building or directly uploading
 firmware while developing.
 
-ESP-AI Mini Ext TFT has its own project, while the other shared display
-firmware profiles live in `src/firmware/esp-display-code-pet`:
+App-supported display targets have direct projects, while lower-level shared
+display profiles still live in `src/firmware/esp-display-code-pet`:
 
 ```bash
 pio run -d src/firmware/esp-ai-mini-ext-tft-code-pet -t upload
-pio run -d src/firmware/esp-display-code-pet -e esp_ai_common_3_tft -t upload
-pio run -d src/firmware/esp-display-code-pet -e esp_ai_diy_esp32s3_oled -t upload
-pio run -d src/firmware/esp-display-code-pet -e m5stack_core2 -t upload
+pio run -d src/firmware/esp-ai-v3-tft-code-pet -t upload
+pio run -d src/firmware/m5stack-cores3-code-pet -t upload
 pio run -d src/firmware/esp-display-code-pet -e lilygo_t_display_s3 -t upload
 ```
 

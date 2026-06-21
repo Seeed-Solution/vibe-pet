@@ -116,6 +116,7 @@ static lv_disp_drv_t lvDisplayDriver;
 static lv_obj_t *lvRoot = nullptr;
 static lv_obj_t *lvHeader = nullptr;
 static lv_obj_t *lvStatus = nullptr;
+static lv_obj_t *lvFooterClip = nullptr;
 static lv_obj_t *lvFooter = nullptr;
 static lv_obj_t *lvImage = nullptr;
 static lv_obj_t *lvFallback = nullptr;
@@ -128,12 +129,17 @@ static lv_obj_t *lvLoadPercent = nullptr;
 static lv_obj_t *lvLoadTrack = nullptr;
 static lv_obj_t *lvLoadFill = nullptr;
 static uint32_t lvLastTickAt = 0;
+static String lvFooterTickerText = "";
+static bool lvFooterTickerDone = false;
 
 #ifndef CODE_PET_DYNAMIC_PERSONA_WIDTH
 #define CODE_PET_DYNAMIC_PERSONA_WIDTH 144
 #endif
 #ifndef CODE_PET_DYNAMIC_PERSONA_HEIGHT
 #define CODE_PET_DYNAMIC_PERSONA_HEIGHT 156
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES
+#define CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES 2
 #endif
 #define CODE_PET_DYNAMIC_PERSONA_BYTES (CODE_PET_DYNAMIC_PERSONA_WIDTH * CODE_PET_DYNAMIC_PERSONA_HEIGHT * 2)
 
@@ -142,25 +148,41 @@ enum DynamicPersonaFormat : uint8_t {
   DYNAMIC_PERSONA_RLE_RGB565,
 };
 
-static uint8_t dynamicPersonaPixels[CODE_PET_DYNAMIC_PERSONA_BYTES];
+static uint8_t dynamicPersonaPixels[CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES][CODE_PET_DYNAMIC_PERSONA_BYTES];
 static uint8_t dynamicPersonaPendingPixels[CODE_PET_DYNAMIC_PERSONA_BYTES];
-static lv_img_dsc_t dynamicPersonaImage = {
-  .header = {
-    .cf = LV_IMG_CF_TRUE_COLOR,
-    .w = CODE_PET_DYNAMIC_PERSONA_WIDTH,
-    .h = CODE_PET_DYNAMIC_PERSONA_HEIGHT,
+static lv_img_dsc_t dynamicPersonaImages[CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES] = {
+  {
+    .header = {
+      .cf = LV_IMG_CF_TRUE_COLOR,
+      .w = CODE_PET_DYNAMIC_PERSONA_WIDTH,
+      .h = CODE_PET_DYNAMIC_PERSONA_HEIGHT,
+    },
+    .data_size = CODE_PET_DYNAMIC_PERSONA_BYTES,
+    .data = dynamicPersonaPixels[0],
   },
-  .data_size = CODE_PET_DYNAMIC_PERSONA_BYTES,
-  .data = dynamicPersonaPixels,
+  {
+    .header = {
+      .cf = LV_IMG_CF_TRUE_COLOR,
+      .w = CODE_PET_DYNAMIC_PERSONA_WIDTH,
+      .h = CODE_PET_DYNAMIC_PERSONA_HEIGHT,
+    },
+    .data_size = CODE_PET_DYNAMIC_PERSONA_BYTES,
+    .data = dynamicPersonaPixels[1],
+  },
 };
 static String dynamicPersonaId = "";
 static String dynamicPersonaSlug = "";
 static String dynamicPersonaTransferSlug = "";
 static bool dynamicPersonaReady = false;
 static bool dynamicPersonaReceiving = false;
+static bool dynamicPersonaShowLoading = true;
 static DynamicPersonaFormat dynamicPersonaFormat = DYNAMIC_PERSONA_RAW_RGB565;
 static uint16_t dynamicPersonaExpectedSeq = 0;
 static uint32_t dynamicPersonaReceived = 0;
+static uint8_t dynamicPersonaFrameCount = 1;
+static uint8_t dynamicPersonaTransferFrameCount = 1;
+static uint8_t dynamicPersonaTransferFrameIndex = 0;
+static uint8_t dynamicPersonaReceivedFrameMask = 0;
 static uint8_t dynamicPersonaLastProgressPercent = 0;
 static uint8_t dynamicPersonaRleTriple[3] = {0, 0, 0};
 static uint8_t dynamicPersonaRleIndex = 0;
@@ -538,12 +560,22 @@ static void renderPetFace(int16_t cx, int16_t cy, int16_t scale, uint16_t body, 
 #if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
 static void ensureLvglUi() {
   if (lvRoot) return;
+  const int16_t sw = screenW();
+  const int16_t statusWidth = sw >= 280 ? 100 : 76;
+  const int16_t headerWidth = sw > statusWidth + 24 ? sw - statusWidth - 24 : sw / 2;
+  const int16_t footerWidth = sw > 16 ? sw - 16 : sw;
+  const int16_t fallbackWidth = sw >= 200 ? 170 : sw - 24;
+  const int16_t fallbackContentWidth = fallbackWidth > 24 ? fallbackWidth - 24 : fallbackWidth;
+  const int16_t loadPanelWidth = sw >= 190 ? 164 : sw - 24;
+  const int16_t loadTrackWidth = loadPanelWidth > 16 ? loadPanelWidth - 16 : loadPanelWidth;
+  const int16_t loadTitleWidth = loadPanelWidth > 120 ? loadPanelWidth - 72 : loadPanelWidth / 2;
+
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
   lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
 
   lvRoot = lv_obj_create(lv_scr_act());
   lv_obj_remove_style_all(lvRoot);
-  lv_obj_set_size(lvRoot, screenW(), screenH());
+  lv_obj_set_size(lvRoot, sw, screenH());
   lv_obj_set_style_bg_opa(lvRoot, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(lvRoot, 0, 0);
   lv_obj_set_style_pad_all(lvRoot, 0, 0);
@@ -552,28 +584,32 @@ static void ensureLvglUi() {
   lv_obj_align(lvImage, LV_ALIGN_CENTER, 0, 0);
 
   lvHeader = lv_label_create(lvRoot);
-  lv_obj_set_width(lvHeader, screenW() - 118);
+  lv_obj_set_width(lvHeader, headerWidth);
   lv_label_set_long_mode(lvHeader, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_font(lvHeader, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvHeader, LV_ALIGN_TOP_LEFT, 8, 6);
 
   lvStatus = lv_label_create(lvRoot);
-  lv_obj_set_width(lvStatus, 100);
+  lv_obj_set_width(lvStatus, statusWidth);
   lv_label_set_long_mode(lvStatus, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(lvStatus, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_font(lvStatus, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvStatus, LV_ALIGN_TOP_RIGHT, -8, 6);
 
-  lvFooter = lv_label_create(lvRoot);
-  lv_obj_set_width(lvFooter, screenW() - 16);
-  lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_CENTER, 0);
+  lvFooterClip = lv_obj_create(lvRoot);
+  lv_obj_remove_style_all(lvFooterClip);
+  lv_obj_set_size(lvFooterClip, footerWidth, 24);
+  lv_obj_align(lvFooterClip, LV_ALIGN_BOTTOM_MID, 0, -3);
+  lv_obj_clear_flag(lvFooterClip, LV_OBJ_FLAG_SCROLLABLE);
+
+  lvFooter = lv_label_create(lvFooterClip);
+  lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_CLIP);
+  lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_LEFT, 0);
   lv_obj_set_style_text_font(lvFooter, LV_FONT_DEFAULT, 0);
-  lv_obj_set_style_anim_speed(lvFooter, 150, 0);
-  lv_obj_align(lvFooter, LV_ALIGN_BOTTOM_MID, 0, -6);
+  lv_obj_align(lvFooter, LV_ALIGN_LEFT_MID, 0, 0);
 
   lvFallback = lv_obj_create(lvRoot);
-  lv_obj_set_size(lvFallback, 170, 108);
+  lv_obj_set_size(lvFallback, fallbackWidth, 108);
   lv_obj_align(lvFallback, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_radius(lvFallback, 18, 0);
   lv_obj_set_style_border_width(lvFallback, 2, 0);
@@ -581,28 +617,28 @@ static void ensureLvglUi() {
   lv_obj_set_style_shadow_width(lvFallback, 0, 0);
 
   lvFallbackPersona = lv_label_create(lvFallback);
-  lv_obj_set_width(lvFallbackPersona, 146);
+  lv_obj_set_width(lvFallbackPersona, fallbackContentWidth);
   lv_label_set_long_mode(lvFallbackPersona, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(lvFallbackPersona, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvFallbackPersona, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFallbackPersona, LV_ALIGN_TOP_MID, 0, 10);
 
   lvFallbackState = lv_label_create(lvFallback);
-  lv_obj_set_width(lvFallbackState, 146);
+  lv_obj_set_width(lvFallbackState, fallbackContentWidth);
   lv_label_set_long_mode(lvFallbackState, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(lvFallbackState, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvFallbackState, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFallbackState, LV_ALIGN_CENTER, 0, 0);
 
   lvFallbackAgent = lv_label_create(lvFallback);
-  lv_obj_set_width(lvFallbackAgent, 146);
+  lv_obj_set_width(lvFallbackAgent, fallbackContentWidth);
   lv_label_set_long_mode(lvFallbackAgent, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(lvFallbackAgent, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvFallbackAgent, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFallbackAgent, LV_ALIGN_BOTTOM_MID, 0, -12);
 
   lvLoadPanel = lv_obj_create(lvRoot);
-  lv_obj_set_size(lvLoadPanel, 164, 56);
+  lv_obj_set_size(lvLoadPanel, loadPanelWidth, 56);
   lv_obj_align(lvLoadPanel, LV_ALIGN_CENTER, 0, 48);
   lv_obj_set_style_radius(lvLoadPanel, 10, 0);
   lv_obj_set_style_border_width(lvLoadPanel, 1, 0);
@@ -612,7 +648,7 @@ static void ensureLvglUi() {
   lv_obj_add_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
 
   lvLoadTitle = lv_label_create(lvLoadPanel);
-  lv_obj_set_width(lvLoadTitle, 92);
+  lv_obj_set_width(lvLoadTitle, loadTitleWidth);
   lv_label_set_long_mode(lvLoadTitle, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_font(lvLoadTitle, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvLoadTitle, LV_ALIGN_TOP_LEFT, 0, -1);
@@ -625,7 +661,7 @@ static void ensureLvglUi() {
   lv_obj_align(lvLoadPercent, LV_ALIGN_TOP_RIGHT, 0, -1);
 
   lvLoadTrack = lv_obj_create(lvLoadPanel);
-  lv_obj_set_size(lvLoadTrack, 148, 8);
+  lv_obj_set_size(lvLoadTrack, loadTrackWidth, 8);
   lv_obj_align(lvLoadTrack, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_set_style_radius(lvLoadTrack, 4, 0);
   lv_obj_set_style_border_width(lvLoadTrack, 0, 0);
@@ -643,21 +679,102 @@ static void ensureLvglUi() {
 
 static uint8_t dynamicPersonaProgressPercent() {
   if (!dynamicPersonaReceiving && dynamicPersonaReady) return 100;
+  uint8_t completeFrames = 0;
+  for (uint8_t i = 0; i < dynamicPersonaTransferFrameCount; i++) {
+    if (dynamicPersonaReceivedFrameMask & (1U << i)) completeFrames++;
+  }
+  uint32_t total = static_cast<uint32_t>(dynamicPersonaTransferFrameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
   uint32_t received = dynamicPersonaReceived;
   if (received > CODE_PET_DYNAMIC_PERSONA_BYTES) received = CODE_PET_DYNAMIC_PERSONA_BYTES;
-  return static_cast<uint8_t>((received * 100U) / CODE_PET_DYNAMIC_PERSONA_BYTES);
+  received += static_cast<uint32_t>(completeFrames) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  if (total == 0) return 0;
+  if (received > total) received = total;
+  return static_cast<uint8_t>((received * 100U) / total);
+}
+
+static void setFooterTickerX(void *obj, int32_t value) {
+  lv_obj_set_x(static_cast<lv_obj_t *>(obj), value);
+}
+
+static void finishFooterTicker(lv_anim_t *anim) {
+  (void)anim;
+  lvFooterTickerDone = true;
+  if (lvFooterClip) lv_obj_add_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void updateFooterTicker(const String &text, bool connected) {
+  if (!lvFooter || !lvFooterClip) return;
+
+  if (!connected) {
+    lv_anim_del(lvFooter, setFooterTickerX);
+    lvFooterTickerText = CODE_PET_DISCONNECTED_LABEL;
+    lvFooterTickerDone = false;
+    lv_obj_clear_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_width(lvFooter, lv_obj_get_width(lvFooterClip));
+    lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(lvFooter, CODE_PET_DISCONNECTED_LABEL);
+    lv_obj_align(lvFooter, LV_ALIGN_CENTER, 0, 0);
+    return;
+  }
+
+  if (!text.length()) {
+    lv_anim_del(lvFooter, setFooterTickerX);
+    lvFooterTickerText = "";
+    lvFooterTickerDone = true;
+    lv_obj_add_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+
+  if (text == lvFooterTickerText) {
+    if (lvFooterTickerDone) lv_obj_add_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+
+  lv_anim_del(lvFooter, setFooterTickerX);
+  lvFooterTickerText = text;
+  lvFooterTickerDone = false;
+  lv_obj_clear_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_width(lvFooter, LV_SIZE_CONTENT);
+  lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_CLIP);
+  lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_LEFT, 0);
+  lv_label_set_text(lvFooter, text.c_str());
+  lv_obj_update_layout(lvFooter);
+
+  int16_t clipWidth = lv_obj_get_width(lvFooterClip);
+  int16_t textWidth = lv_obj_get_width(lvFooter);
+  int16_t startX = clipWidth;
+  int16_t endX = -textWidth;
+  uint32_t distance = static_cast<uint32_t>(clipWidth + textWidth);
+  uint32_t duration = (distance * 1000U) / 230U;
+  if (duration < 900U) duration = 900U;
+
+  lv_obj_set_y(lvFooter, 1);
+  lv_obj_set_x(lvFooter, startX);
+
+  lv_anim_t anim;
+  lv_anim_init(&anim);
+  lv_anim_set_var(&anim, lvFooter);
+  lv_anim_set_exec_cb(&anim, setFooterTickerX);
+  lv_anim_set_values(&anim, startX, endX);
+  lv_anim_set_time(&anim, duration);
+  lv_anim_set_ready_cb(&anim, finishFooterTicker);
+  lv_anim_start(&anim);
 }
 
 static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, uint16_t ink, uint16_t muted, uint16_t accent) {
   ensureLvglUi();
   const bool connected = bleConnected;
-  String renderSlug = connected ? pet.personaSlug : String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
+  String renderSlug = pet.personaSlug.length() ? pet.personaSlug : String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
   String renderState = connected ? pet.state : String("idle");
-  const bool imageLoading = connected && dynamicPersonaReceiving && dynamicPersonaTransferSlug == renderSlug;
+  const bool imageLoading = connected && dynamicPersonaReceiving && dynamicPersonaShowLoading && dynamicPersonaTransferSlug == renderSlug;
   const uint8_t imageProgress = imageLoading ? dynamicPersonaProgressPercent() : 0;
-  const lv_img_dsc_t *frame = imageLoading && dynamicPersonaReady ? &dynamicPersonaImage : dynamicPersonaFrameForSlug(renderSlug);
+  const lv_img_dsc_t *frame = imageLoading && dynamicPersonaReady ? dynamicPersonaFrameForSlug(dynamicPersonaSlug) : dynamicPersonaFrameForSlug(renderSlug);
   if (!frame) {
     frame = codePetPersonaFrame(renderSlug, renderState, frameIndex);
+  }
+  if (!frame && !connected && dynamicPersonaReady) {
+    frame = dynamicPersonaFrameForSlug(dynamicPersonaSlug);
   }
   if (!frame) {
     frame = codePetPersonaFrame(String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG), renderState, frameIndex);
@@ -685,16 +802,18 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(lvLoadFill, lvColor(accent), 0);
   lv_obj_set_style_bg_opa(lvLoadFill, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_color(lvFooter, lvColor(labelMuted), 0);
   lv_label_set_text(lvHeader, connected ? cleanText(pet.agent, 22).c_str() : "");
   String statusText = connected ? cleanText(imageLoading ? String("Sync ") + String(imageProgress) + "%" : displayStateLabel(), 20) : "";
   lv_label_set_text(lvStatus, statusText.c_str());
   String footer = connected ? cleanText(pet.output, CODE_PET_OUTPUT_MAX_CHARS) : String(CODE_PET_DISCONNECTED_LABEL);
-  lv_label_set_text(lvFooter, footer.c_str());
+  updateFooterTicker(footer, connected);
   if (imageLoading) {
     String progressText = String(imageProgress) + "%";
     lv_label_set_text(lvLoadTitle, "Syncing");
     lv_label_set_text(lvLoadPercent, progressText.c_str());
-    int16_t fillWidth = (148 * imageProgress) / 100;
+    const int16_t trackWidth = lv_obj_get_width(lvLoadTrack);
+    int16_t fillWidth = (trackWidth * imageProgress) / 100;
     if (fillWidth < 1) fillWidth = 1;
     lv_obj_set_width(lvLoadFill, fillWidth);
     lv_obj_clear_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
@@ -718,7 +837,7 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   lv_obj_add_flag(lvFallback, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(lvHeader);
   lv_obj_move_foreground(lvStatus);
-  lv_obj_move_foreground(lvFooter);
+  lv_obj_move_foreground(lvFooterClip);
   if (imageLoading) lv_obj_move_foreground(lvLoadPanel);
   return true;
 }
@@ -784,26 +903,39 @@ static void markDirty() {
 #if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
 static const lv_img_dsc_t *dynamicPersonaFrameForSlug(const String &slug) {
   if (!dynamicPersonaReady || !dynamicPersonaSlug.length() || slug != dynamicPersonaSlug) return nullptr;
-  return &dynamicPersonaImage;
+  uint8_t count = dynamicPersonaFrameCount;
+  if (count < 1) count = 1;
+  if (count > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) count = CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES;
+  uint8_t slot = count > 1 ? (frameIndex % count) : 0;
+  return &dynamicPersonaImages[slot];
 }
 
 static void clearDynamicPersonaFrame() {
   dynamicPersonaReady = false;
   dynamicPersonaReceiving = false;
+  dynamicPersonaShowLoading = true;
   dynamicPersonaId = "";
   dynamicPersonaSlug = "";
   dynamicPersonaTransferSlug = "";
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaReceived = 0;
+  dynamicPersonaFrameCount = 1;
+  dynamicPersonaTransferFrameCount = 1;
+  dynamicPersonaTransferFrameIndex = 0;
+  dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
   dynamicPersonaRleIndex = 0;
 }
 
 static void abortDynamicPersonaTransfer() {
   dynamicPersonaReceiving = false;
+  dynamicPersonaShowLoading = true;
   dynamicPersonaTransferSlug = "";
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaReceived = 0;
+  dynamicPersonaTransferFrameCount = 1;
+  dynamicPersonaTransferFrameIndex = 0;
+  dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
   dynamicPersonaRleIndex = 0;
   markDirty();
@@ -870,19 +1002,39 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     int width = src["w"] | 0;
     int height = src["h"] | 0;
     uint32_t size = src["z"] | 0;
+    bool showLoading = (src["ld"] | 1) != 0;
+    int frameCount = src["fc"] | 1;
+    int frameSlot = src["fr"] | 0;
 
     if (!id.length() || !slug.length() ||
         width != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
         height != CODE_PET_DYNAMIC_PERSONA_HEIGHT ||
         size != CODE_PET_DYNAMIC_PERSONA_BYTES ||
+        frameCount < 1 ||
+        frameCount > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES ||
+        frameSlot < 0 ||
+        frameSlot >= frameCount ||
         (format != "rgb565" && format != "rgb565-rle")) {
       abortDynamicPersonaTransfer();
       return;
     }
 
+    if (frameSlot == 0) {
+      dynamicPersonaReceivedFrameMask = 0;
+      dynamicPersonaTransferFrameCount = static_cast<uint8_t>(frameCount);
+      dynamicPersonaTransferSlug = slug;
+    } else if (id != dynamicPersonaId ||
+               slug != dynamicPersonaTransferSlug ||
+               frameCount != dynamicPersonaTransferFrameCount ||
+               (dynamicPersonaReceivedFrameMask & (1U << frameSlot))) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+
     dynamicPersonaReceiving = true;
+    dynamicPersonaShowLoading = showLoading;
     dynamicPersonaId = id;
-    dynamicPersonaTransferSlug = slug;
+    dynamicPersonaTransferFrameIndex = static_cast<uint8_t>(frameSlot);
     dynamicPersonaFormat = format == "rgb565-rle" ? DYNAMIC_PERSONA_RLE_RGB565 : DYNAMIC_PERSONA_RAW_RGB565;
     dynamicPersonaExpectedSeq = 0;
     dynamicPersonaReceived = 0;
@@ -914,7 +1066,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     uint8_t progress = dynamicPersonaProgressPercent();
     if (progress != dynamicPersonaLastProgressPercent) {
       dynamicPersonaLastProgressPercent = progress;
-      markDirty();
+      if (dynamicPersonaShowLoading) markDirty();
     }
     return;
   }
@@ -925,13 +1077,17 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
         dynamicPersonaReceived == CODE_PET_DYNAMIC_PERSONA_BYTES &&
         dynamicPersonaRleIndex == 0) {
       dynamicPersonaReceiving = false;
-      memcpy(dynamicPersonaPixels, dynamicPersonaPendingPixels, CODE_PET_DYNAMIC_PERSONA_BYTES);
+      memcpy(dynamicPersonaPixels[dynamicPersonaTransferFrameIndex], dynamicPersonaPendingPixels, CODE_PET_DYNAMIC_PERSONA_BYTES);
       dynamicPersonaReady = true;
       dynamicPersonaSlug = dynamicPersonaTransferSlug;
-      dynamicPersonaTransferSlug = "";
-      dynamicPersonaImage.data_size = CODE_PET_DYNAMIC_PERSONA_BYTES;
-      dynamicPersonaImage.data = dynamicPersonaPixels;
-      dynamicPersonaLastProgressPercent = 100;
+      dynamicPersonaReceivedFrameMask |= (1U << dynamicPersonaTransferFrameIndex);
+      if (dynamicPersonaReceivedFrameMask & 0x01) dynamicPersonaFrameCount = 1;
+      uint8_t completeMask = (1U << dynamicPersonaTransferFrameCount) - 1U;
+      if ((dynamicPersonaReceivedFrameMask & completeMask) == completeMask) {
+        dynamicPersonaFrameCount = dynamicPersonaTransferFrameCount;
+        dynamicPersonaTransferSlug = "";
+        dynamicPersonaLastProgressPercent = 100;
+      }
       markDirty();
     } else {
       abortDynamicPersonaTransfer();
@@ -942,23 +1098,20 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
 
 static void setDisconnectedPetState() {
 #if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
-  clearDynamicPersonaFrame();
+  abortDynamicPersonaTransfer();
 #endif
   String currentTheme = pet.theme;
   bool changed = pet.state != "idle" || pet.stateLabel.length() || pet.agent.length() ||
                  pet.event != CODE_PET_DISCONNECTED_LABEL || pet.title.length() || pet.output.length() ||
-                 pet.personaSlug != "lulu" || pet.personaName != "Lulu" ||
-                 pet.personaKind.length() || pet.spriteUrl.length() || pet.activeCount != 0;
+                 pet.activeCount != 0;
   pet.state = "idle";
   pet.stateLabel = "";
   pet.agent = "";
   pet.event = CODE_PET_DISCONNECTED_LABEL;
   pet.title = "";
   pet.output = "";
-  pet.personaSlug = "lulu";
-  pet.personaName = "Lulu";
-  pet.personaKind = "";
-  pet.spriteUrl = "";
+  if (!pet.personaSlug.length()) pet.personaSlug = "lulu";
+  if (!pet.personaName.length()) pet.personaName = "Lulu";
   pet.theme = (currentTheme == "night" || currentTheme == "dark") ? currentTheme : "day";
   pet.activeCount = 0;
   pet.receivedAt = 0;
