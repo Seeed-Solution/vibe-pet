@@ -42,6 +42,24 @@ function clampText(value, max) {
   return clean.length > max ? clean.slice(0, max - 3) + "..." : clean;
 }
 
+function personaOf(data = {}) {
+  const persona = data.persona && typeof data.persona === "object" ? data.persona : {};
+  return {
+    slug: clampText(data.p || data.personaSlug || persona.slug || "", 48),
+    displayName: clampText(data.d || data.personaName || persona.displayName || persona.name || "", 48),
+    kind: clampText(data.k || data.personaKind || persona.kind || "", 24),
+    spritesheetUrl: clampText(data.u || data.spriteUrl || persona.spritesheetUrl || persona.spriteUrl || "", 300),
+  };
+}
+
+function attachPersona(packet, data = {}) {
+  const persona = personaOf(data);
+  if (persona.slug) packet.p = persona.slug;
+  if (persona.displayName) packet.d = persona.displayName;
+  if (persona.kind) packet.k = persona.kind;
+  if (persona.spritesheetUrl) packet.u = persona.spritesheetUrl;
+}
+
 function normalizeState(state) {
   const raw = typeof state === "string" ? state.trim() : "";
   if (raw === "codex-permission") return "notification";
@@ -65,6 +83,8 @@ function toDevicePacket(snapshot) {
   if (title) packet.m = title;
   const output = clampText(data.output || "", DEVICE_OUTPUT_MAX_CHARS);
   if (output) packet.o = output;
+
+  attachPersona(packet, data);
 
   return packet;
 }

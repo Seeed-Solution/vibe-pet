@@ -5,6 +5,10 @@ const STATE_CHAR_UUID = "7b71f91a-3c7b-4c3b-9f2d-2dbdccd5c002";
 const BLUETOOTH_SCAN_NAME_PREFIX = "VibePet";
 const BLUETOOTH_DEVICE_STORAGE_KEY = "code-pet-bluetooth-device";
 const DEVICE_OUTPUT_MAX_CHARS = 120;
+const BLUETOOTH_JSON_MAX_BYTES = 480;
+const BLUETOOTH_TITLE_MAX_BYTES = 48;
+const BLUETOOTH_DIRECT_WRITE_MAX_BYTES = 20;
+const BLUETOOTH_FRAGMENT_DATA_BYTES = 18;
 
 const stateName = document.getElementById("stateName");
 const agentName = document.getElementById("agentName");
@@ -28,6 +32,8 @@ let stateCharacteristic = null;
 let autoConnectInFlight = false;
 let autoConnectTimer = null;
 let connectionMessage = { message: "connection.disconnected", values: {}, connected: false };
+let latestDeviceSnapshot = null;
+let bluetoothFragmentSequence = 0;
 let latestAggregate = {
   state: "idle",
   agent: "agent",
@@ -45,10 +51,88 @@ function localizedMessage(message, values = {}) {
   return String(message || "");
 }
 
+function clampUtf8Text(value, maxBytes) {
+  if (typeof value !== "string") return "";
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean || maxBytes <= 0) return "";
+  const encoder = new TextEncoder();
+  if (encoder.encode(clean).length <= maxBytes) return clean;
+  const suffix = maxBytes > 3 ? "..." : "";
+  const suffixBytes = encoder.encode(suffix).length;
+  let out = "";
+  let bytes = 0;
+  for (const char of clean) {
+    const charBytes = encoder.encode(char).length;
+    if (bytes + charBytes + suffixBytes > maxBytes) break;
+    out += char;
+    bytes += charBytes;
+  }
+  return out ? `${out.trimEnd()}${suffix}` : "";
+}
+
+function bluetoothJsonByteLength(payload) {
+  return new TextEncoder().encode(JSON.stringify(payload || {})).length;
+}
+
+function compactBluetoothStatePayload(payload) {
+  const next = { ...(payload || {}) };
+  delete next.o;
+  delete next.u;
+  if (next.m) next.m = clampUtf8Text(next.m, BLUETOOTH_TITLE_MAX_BYTES);
+  if (next.e) next.e = clampUtf8Text(next.e, 32);
+  if (next.a) next.a = clampUtf8Text(next.a, 24);
+  if (next.sl) next.sl = clampUtf8Text(next.sl, 24);
+  if (next.p) next.p = clampUtf8Text(next.p, 48);
+  if (next.d) next.d = clampUtf8Text(next.d, 48);
+  if (next.k) next.k = clampUtf8Text(next.k, 24);
+
+  if (bluetoothJsonByteLength(next) <= BLUETOOTH_JSON_MAX_BYTES) return next;
+  delete next.m;
+  if (bluetoothJsonByteLength(next) <= BLUETOOTH_JSON_MAX_BYTES) return next;
+  delete next.sl;
+  if (bluetoothJsonByteLength(next) <= BLUETOOTH_JSON_MAX_BYTES) return next;
+  delete next.e;
+  return next;
+}
+
 function stateLabel(state) {
   const key = `state.${state || "idle"}`;
   const label = t(key);
   return label === key ? t("state.unknown") : label;
+}
+
+function packetFromDeviceEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const packet = entry.packet && typeof entry.packet === "object" ? entry.packet : entry;
+  return packet && typeof packet === "object" ? { ...packet } : null;
+}
+
+function stateFromDeviceEntry(entry) {
+  const packet = packetFromDeviceEntry(entry);
+  return String((entry && entry.state) || (packet && (packet.s || packet.state)) || "idle");
+}
+
+function packetFromDeviceSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const pets = Array.isArray(snapshot.pets) ? snapshot.pets : [];
+  let selected = null;
+  for (const pet of pets) {
+    const state = stateFromDeviceEntry(pet);
+    if (state !== "idle" && state !== "sleeping") {
+      selected = pet;
+      break;
+    }
+    if (!selected) selected = pet;
+  }
+  return packetFromDeviceEntry(selected) || packetFromDeviceEntry(snapshot.aggregate);
+}
+
+async function refreshDeviceSnapshot() {
+  try {
+    const response = await fetch("/api/device-snapshot", { cache: "no-store" });
+    if (response.ok) latestDeviceSnapshot = await response.json();
+  } catch {}
+  return latestDeviceSnapshot;
 }
 
 function renderConnection() {
@@ -73,18 +157,19 @@ function closeStatusPanel() {
 }
 
 function compactPacket(aggregate) {
-  const packet = aggregate && aggregate.devicePacket ? { ...aggregate.devicePacket } : {
+  const devicePacket = packetFromDeviceSnapshot(latestDeviceSnapshot);
+  const packet = devicePacket || (aggregate && aggregate.devicePacket ? { ...aggregate.devicePacket } : {
     v: 1,
     s: aggregate.state || "idle",
     a: aggregate.agent || "agent",
     e: aggregate.event || "",
     n: aggregate.activeCount || 0,
     ts: Date.now(),
-  };
+  });
   packet.th = storedTheme();
   packet.sl = stateLabel(packet.s);
   packet.l = window.VibePetI18n && typeof window.VibePetI18n.getLocale === "function" ? window.VibePetI18n.getLocale() : "en";
-  const output = String((aggregate && aggregate.output) || "").replace(/\s+/g, " ").trim();
+  const output = String(packet.o || (aggregate && aggregate.output) || "").replace(/\s+/g, " ").trim();
   if (output) packet.o = output.length > DEVICE_OUTPUT_MAX_CHARS ? output.slice(0, DEVICE_OUTPUT_MAX_CHARS - 3) + "..." : output;
   else delete packet.o;
   return packet;
@@ -229,14 +314,49 @@ function scheduleAutoConnect(delay = 0) {
 
 async function sendCurrent() {
   if (!stateCharacteristic) return;
-  const packet = compactPacket(latestAggregate);
+  const packet = compactBluetoothStatePayload(compactPacket(latestAggregate));
   packet.ts = Date.now();
   const bytes = new TextEncoder().encode(JSON.stringify(packet));
+  if (bytes.length > BLUETOOTH_JSON_MAX_BYTES) throw new Error(`BLE payload too large (${bytes.length} bytes).`);
+  try {
+    await writeBluetoothBytes(bytes);
+  } catch (err) {
+    if (bytes.length <= BLUETOOTH_DIRECT_WRITE_MAX_BYTES) throw err;
+    await writeBluetoothFragmentedBytes(bytes);
+    console.warn("[ble] direct write failed; sent fragmented payload", err && err.message ? err.message : err);
+  }
+  setConnection((device && device.name) || "connection.connected", true);
+}
+
+async function writeBluetoothBytes(bytes) {
+  if (!stateCharacteristic) throw new Error("No Bluetooth connection.");
   if (stateCharacteristic.writeValueWithResponse) {
     await stateCharacteristic.writeValueWithResponse(bytes);
   } else {
     await stateCharacteristic.writeValue(bytes);
   }
+}
+
+function nextBluetoothFragmentId() {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  const id = alphabet[bluetoothFragmentSequence % alphabet.length];
+  bluetoothFragmentSequence = (bluetoothFragmentSequence + 1) % alphabet.length;
+  return id;
+}
+
+async function writeBluetoothFragmentedBytes(bytes) {
+  const encoder = new TextEncoder();
+  const id = nextBluetoothFragmentId();
+  await writeBluetoothBytes(encoder.encode(`#${id}:${bytes.length}`));
+  for (let offset = 0; offset < bytes.length; offset += BLUETOOTH_FRAGMENT_DATA_BYTES) {
+    const chunk = bytes.subarray(offset, offset + BLUETOOTH_FRAGMENT_DATA_BYTES);
+    const packet = new Uint8Array(2 + chunk.length);
+    packet[0] = 43;
+    packet[1] = id.charCodeAt(0);
+    packet.set(chunk, 2);
+    await writeBluetoothBytes(packet);
+  }
+  await writeBluetoothBytes(encoder.encode(`!${id}`));
 }
 
 async function connectDevice() {
@@ -258,6 +378,7 @@ function connectEvents() {
   source.addEventListener("message", async (event) => {
     const payload = JSON.parse(event.data);
     if (payload.aggregate) {
+      await refreshDeviceSnapshot();
       render(payload.aggregate);
       try {
         await sendCurrent();
@@ -305,8 +426,9 @@ languageSelect.addEventListener("change", () => {
   if (window.VibePetI18n) window.VibePetI18n.setLocale(languageSelect.value);
 });
 
-window.addEventListener("code-pet:language-change", () => {
+window.addEventListener("code-pet:language-change", async () => {
   renderConnection();
+  await refreshDeviceSnapshot();
   render(latestAggregate);
   if (stateCharacteristic) {
     sendCurrent().catch((err) => setConnection("connection.sendFailed", false, { message: err.message }));
@@ -314,9 +436,11 @@ window.addEventListener("code-pet:language-change", () => {
 });
 
 applyTheme(storedTheme());
-fetch("/api/snapshot")
-  .then((res) => res.json())
-  .then((snapshot) => render(snapshot.aggregate))
+Promise.all([
+  fetch("/api/snapshot").then((res) => res.json()),
+  refreshDeviceSnapshot(),
+])
+  .then(([snapshot]) => render(snapshot.aggregate))
   .catch(() => render(latestAggregate));
 connectEvents();
 scheduleAutoConnect(600);

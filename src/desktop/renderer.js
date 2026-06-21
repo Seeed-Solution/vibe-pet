@@ -31,9 +31,13 @@ const HARDWARE_PERSONA_FRAME_WIDTH = 144;
 const HARDWARE_PERSONA_FRAME_HEIGHT = 156;
 const HARDWARE_PERSONA_FRAME_BYTES = HARDWARE_PERSONA_FRAME_WIDTH * HARDWARE_PERSONA_FRAME_HEIGHT * 2;
 const HARDWARE_PERSONA_MAX_FRAMES = 2;
-const HARDWARE_PERSONA_CHUNK_CHARS = 160;
+const HARDWARE_PERSONA_CHUNK_CHARS = 120;
 const HARDWARE_PERSONA_CHUNK_DELAY_MS = 8;
 const HARDWARE_OUTPUT_MAX_CHARS = 120;
+const BLUETOOTH_JSON_MAX_BYTES = 480;
+const BLUETOOTH_TITLE_MAX_BYTES = 48;
+const BLUETOOTH_DIRECT_WRITE_MAX_BYTES = 20;
+const BLUETOOTH_FRAGMENT_DATA_BYTES = 18;
 const TENCENT_AEGIS_LOCAL_SDK_URL = "../../node_modules/aegis-web-sdk/lib/aegis.min.js";
 const TENCENT_AEGIS_SDK_URL = "https://tam.cdn-go.cn/aegis-sdk/latest/aegis.min.js";
 const PETDEX_ROW_BY_STATE = {
@@ -346,6 +350,7 @@ let petViewOrder = [];
 let petSelectionAliasesByViewId = new Map();
 let lastBluetoothDevices = [];
 let bluetoothWriteQueue = Promise.resolve();
+let bluetoothFragmentSequence = 0;
 let hardwarePersonaImageCache = new Map();
 let lastHardwarePersonaImageKey = "";
 let lastHardwarePersonaLoadingSignature = "";
@@ -623,7 +628,7 @@ function activeBluetoothConnectionMessage() {
 function setBluetoothSendFailed(err) {
   const message = err && err.message ? err.message : String(err || "");
   if (hasActiveBluetoothConnection()) {
-    setConnection(activeBluetoothConnectionMessage(), true);
+    setConnection("connection.sendFailed", true, { message });
     return;
   }
   setConnection("connection.sendFailed", false, { message });
@@ -720,6 +725,65 @@ function clampText(value, max) {
   if (typeof value !== "string") return "";
   const clean = value.replace(/\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max - 3) + "..." : clean;
+}
+
+function clampUtf8Text(value, maxBytes) {
+  if (typeof value !== "string") return "";
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean || maxBytes <= 0) return "";
+  const encoder = new TextEncoder();
+  if (encoder.encode(clean).length <= maxBytes) return clean;
+  const suffix = maxBytes > 3 ? "..." : "";
+  const suffixBytes = encoder.encode(suffix).length;
+  let out = "";
+  let bytes = 0;
+  for (const char of clean) {
+    const charBytes = encoder.encode(char).length;
+    if (bytes + charBytes + suffixBytes > maxBytes) break;
+    out += char;
+    bytes += charBytes;
+  }
+  return out ? `${out.trimEnd()}${suffix}` : "";
+}
+
+function bluetoothJsonByteLength(payload) {
+  return new TextEncoder().encode(JSON.stringify(payload || {})).length;
+}
+
+function compactBluetoothStatePayload(payload) {
+  const next = { ...(payload || {}) };
+  delete next.o;
+  delete next.u;
+  if (next.m) next.m = clampUtf8Text(next.m, BLUETOOTH_TITLE_MAX_BYTES);
+  if (next.e) next.e = clampUtf8Text(next.e, 32);
+  if (next.a) next.a = clampUtf8Text(next.a, 24);
+  if (next.sl) next.sl = clampUtf8Text(next.sl, 24);
+  if (next.p) next.p = clampUtf8Text(next.p, 48);
+  if (next.d) next.d = clampUtf8Text(next.d, 48);
+  if (next.k) next.k = clampUtf8Text(next.k, 24);
+
+  if (bluetoothJsonByteLength(next) <= BLUETOOTH_JSON_MAX_BYTES) return next;
+  delete next.m;
+  if (bluetoothJsonByteLength(next) <= BLUETOOTH_JSON_MAX_BYTES) return next;
+  delete next.sl;
+  if (bluetoothJsonByteLength(next) <= BLUETOOTH_JSON_MAX_BYTES) return next;
+  delete next.e;
+  return next;
+}
+
+function compactBluetoothImagePayload(payload) {
+  const next = { ...(payload || {}) };
+  if (next.im !== "s") return next;
+  delete next.u;
+  if (next.p) next.p = clampUtf8Text(next.p, 48);
+  if (next.d) next.d = clampUtf8Text(next.d, 48);
+  if (next.k) next.k = clampUtf8Text(next.k, 24);
+  return next;
+}
+
+function bluetoothPayload(payload) {
+  if (payload && payload.im) return compactBluetoothImagePayload(payload);
+  return compactBluetoothStatePayload(payload);
 }
 
 function setAutoScrollingOutput(element, value) {
@@ -870,6 +934,9 @@ async function ensurePetdexPets(options = {}) {
     petdexLoading = false;
     renderPetPickerModal();
     renderSnapshot(latestSnapshot);
+    if (stateCharacteristic) {
+      sendCurrent({ ensurePersonaSync: true }).catch(setBluetoothSendFailed);
+    }
   }
 }
 
@@ -932,6 +999,32 @@ function petdexFrameSequenceForState(state, cols) {
   const safeCols = Math.max(1, Number(cols) || PETDEX_DEFAULT_COLS);
   const frames = sequence.filter((frame) => frame >= 0 && frame < safeCols);
   return frames.length ? frames : [0];
+}
+
+function hardwarePersonaSequenceIndexes(sequence, maxFrames) {
+  const safeSequence = Array.isArray(sequence) && sequence.length ? sequence : [0];
+  const count = Math.max(1, Math.min(maxFrames, safeSequence.length));
+  if (count === 1) return [0];
+
+  const indexes = [];
+  const usedFrames = new Set();
+  for (let slot = 0; slot < count; slot++) {
+    const index = Math.min(safeSequence.length - 1, Math.floor((slot * safeSequence.length) / count));
+    const frame = safeSequence[index];
+    if (!usedFrames.has(frame)) {
+      indexes.push(index);
+      usedFrames.add(frame);
+    }
+  }
+
+  for (let index = 0; indexes.length < count && index < safeSequence.length; index++) {
+    const frame = safeSequence[index];
+    if (usedFrames.has(frame)) continue;
+    indexes.push(index);
+    usedFrames.add(frame);
+  }
+
+  return indexes.length ? indexes : [0];
 }
 
 function petdexFrameForState(state, cols, animated) {
@@ -1140,10 +1233,10 @@ async function buildHardwarePersonaFrames(persona, state, theme) {
   const meta = hardwarePersonaMeta(persona.spritesheetUrl, image);
   const cols = Math.max(1, Number(meta.cols) || PETDEX_DEFAULT_COLS);
   const sequence = petdexFrameSequenceForState(normalizedState, cols);
-  const frameCount = Math.max(1, Math.min(HARDWARE_PERSONA_MAX_FRAMES, sequence.length));
+  const sequenceIndexes = hardwarePersonaSequenceIndexes(sequence, HARDWARE_PERSONA_MAX_FRAMES);
   const frames = [];
-  for (let i = 0; i < frameCount; i++) {
-    frames.push(await buildHardwarePersonaFrame(persona, normalizedState, theme, i));
+  for (const sequenceIndex of sequenceIndexes) {
+    frames.push(await buildHardwarePersonaFrame(persona, normalizedState, theme, sequenceIndex));
   }
   return frames;
 }
@@ -2431,12 +2524,48 @@ function sleep(ms) {
 async function writeBluetoothJson(payload) {
   const characteristic = stateCharacteristic;
   if (!characteristic) throw new Error("No Bluetooth connection.");
-  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const nextPayload = bluetoothPayload(payload);
+  const bytes = new TextEncoder().encode(JSON.stringify(nextPayload));
+  if (bytes.length > BLUETOOTH_JSON_MAX_BYTES && !(nextPayload && nextPayload.im)) {
+    throw new Error(`BLE payload too large (${bytes.length} bytes).`);
+  }
+  try {
+    await writeBluetoothBytes(characteristic, bytes);
+  } catch (err) {
+    if (bytes.length <= BLUETOOTH_DIRECT_WRITE_MAX_BYTES) throw err;
+    await writeBluetoothFragmentedBytes(characteristic, bytes);
+    console.warn("[ble] direct write failed; sent fragmented payload", err && err.message ? err.message : err);
+  }
+}
+
+async function writeBluetoothBytes(characteristic, bytes) {
   if (characteristic.writeValueWithResponse) {
     await characteristic.writeValueWithResponse(bytes);
   } else {
     await characteristic.writeValue(bytes);
   }
+}
+
+function nextBluetoothFragmentId() {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  const id = alphabet[bluetoothFragmentSequence % alphabet.length];
+  bluetoothFragmentSequence = (bluetoothFragmentSequence + 1) % alphabet.length;
+  return id;
+}
+
+async function writeBluetoothFragmentedBytes(characteristic, bytes) {
+  const encoder = new TextEncoder();
+  const id = nextBluetoothFragmentId();
+  await writeBluetoothBytes(characteristic, encoder.encode(`#${id}:${bytes.length}`));
+  for (let offset = 0; offset < bytes.length; offset += BLUETOOTH_FRAGMENT_DATA_BYTES) {
+    const chunk = bytes.subarray(offset, offset + BLUETOOTH_FRAGMENT_DATA_BYTES);
+    const packet = new Uint8Array(2 + chunk.length);
+    packet[0] = 43;
+    packet[1] = id.charCodeAt(0);
+    packet.set(chunk, 2);
+    await writeBluetoothBytes(characteristic, packet);
+  }
+  await writeBluetoothBytes(characteristic, encoder.encode(`!${id}`));
 }
 
 function hardwarePersonaTransferState(hardwarePet, packet) {
@@ -2586,10 +2715,17 @@ async function sendCurrent(options = {}) {
     shouldShowPersonaLoading = !!transferSignature && loadingSignature !== lastHardwarePersonaLoadingSignature;
   }
   return enqueueBluetoothWrite(async () => {
-    if (!ensurePersonaSync && sendSequence !== hardwareSendSequence) return;
+    let personaFrameStillCurrent = shouldSendPersonaFrame && !!transferSignature &&
+      transferSignature === latestHardwarePersonaRequestSignature &&
+      transferRevision === hardwarePersonaTransferRevision;
+    if (!ensurePersonaSync && sendSequence !== hardwareSendSequence && !personaFrameStillCurrent) return;
     if (ensurePersonaSync && transferSignature && transferRevision !== hardwarePersonaTransferRevision) return;
     await writeBluetoothJson(packet);
-    if (!ensurePersonaSync && sendSequence !== hardwareSendSequence) return;
+    setConnection(activeBluetoothConnectionMessage(), true);
+    personaFrameStillCurrent = shouldSendPersonaFrame && !!transferSignature &&
+      transferSignature === latestHardwarePersonaRequestSignature &&
+      transferRevision === hardwarePersonaTransferRevision;
+    if (!ensurePersonaSync && sendSequence !== hardwareSendSequence && !personaFrameStillCurrent) return;
     if (transferSignature && transferRevision !== hardwarePersonaTransferRevision) return;
     try {
       if (shouldSendPersonaFrame) {

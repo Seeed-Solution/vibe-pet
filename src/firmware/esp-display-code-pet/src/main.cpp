@@ -53,6 +53,10 @@ extern TFT_eSPI tft;
 #define SERVICE_UUID "7b71f91a-3c7b-4c3b-9f2d-2dbdccd5c001"
 #define STATE_CHAR_UUID "7b71f91a-3c7b-4c3b-9f2d-2dbdccd5c002"
 
+#ifndef CODE_PET_BLE_MTU
+#define CODE_PET_BLE_MTU 517
+#endif
+
 #ifndef CP_OLED_WIDTH
 #define CP_OLED_WIDTH 128
 #endif
@@ -94,6 +98,7 @@ struct VibePetPacket {
   String personaKind = "";
   String spriteUrl = "";
   String theme = "day";
+  String locale = "en";
   int activeCount = 0;
   unsigned long receivedAt = 0;
 };
@@ -102,10 +107,17 @@ VibePetPacket pet;
 #ifndef CODE_PET_BLE_PAYLOAD_QUEUE_SIZE
 #define CODE_PET_BLE_PAYLOAD_QUEUE_SIZE 24
 #endif
+#ifndef CODE_PET_BLE_FRAGMENT_MAX_BYTES
+#define CODE_PET_BLE_FRAGMENT_MAX_BYTES 768
+#endif
 String incomingPayloadQueue[CODE_PET_BLE_PAYLOAD_QUEUE_SIZE];
 volatile uint8_t incomingPayloadHead = 0;
 volatile uint8_t incomingPayloadTail = 0;
-bool pendingPayload = false;
+volatile bool pendingPayload = false;
+String incomingBleFragment = "";
+char incomingBleFragmentId = '\0';
+size_t incomingBleFragmentExpectedBytes = 0;
+bool incomingBleFragmentActive = false;
 bool bleConnected = false;
 bool uiDirty = true;
 uint8_t frameIndex = 0;
@@ -535,13 +547,72 @@ static void updateStatusPixel() {
 #endif
 }
 
-static String stateLabel(const String &state) {
+static bool isZhLocale(const String &locale) {
+  return locale == "zh" || locale.startsWith("zh-") || locale.startsWith("zh_");
+}
+
+static bool isJaLocale(const String &locale) {
+  return locale == "ja" || locale.startsWith("ja-") || locale.startsWith("ja_");
+}
+
+static String stateLabelForLocale(const String &state, const String &locale) {
+  if (isZhLocale(locale)) {
+    if (state == "notification" || state == "permission") return "通知";
+    if (state == "thinking") return "思考中";
+    if (state == "working" || state == "typing") return "工作中";
+    if (state == "building") return "构建中";
+    if (state == "juggling") return "多任务";
+    if (state == "attention") return "需关注";
+    if (state == "error") return "出错";
+    if (state == "sweeping") return "清理中";
+    if (state == "sleeping") return "休眠";
+    return "空闲";
+  }
+  if (isJaLocale(locale)) {
+    if (state == "notification" || state == "permission") return "通知";
+    if (state == "thinking") return "思考中";
+    if (state == "working" || state == "typing") return "作業中";
+    if (state == "building") return "ビルド中";
+    if (state == "juggling") return "複数処理";
+    if (state == "attention") return "要確認";
+    if (state == "error") return "エラー";
+    if (state == "sweeping") return "整理中";
+    if (state == "sleeping") return "休止中";
+    return "待機中";
+  }
   if (state == "notification" || state == "permission") return "notify";
   return state.length() ? state : "idle";
 }
 
+static String stateLabel(const String &state) {
+  return stateLabelForLocale(state, "en");
+}
+
+static bool isDefaultStateLabel(const String &label, const String &state) {
+  if (!label.length()) return true;
+  if (label == state || label == stateLabelForLocale(state, "en")) return true;
+  String lower = label;
+  lower.toLowerCase();
+  if (lower == state) return true;
+  if ((state == "working" || state == "typing") && lower == "working") return true;
+  if ((state == "notification" || state == "permission") && label == "Notification") return true;
+  if (state == "juggling" && label == "Handling multiple tasks") return true;
+  if (state == "attention" && label == "Needs attention") return true;
+  if (state == "sweeping" && label == "Cleaning context") return true;
+  if (label == "Unknown" || label == "未知状态" || label == "不明") return true;
+  return false;
+}
+
+static String localizedStateLabel(const String &state, const String &locale, const String &label) {
+  String cleanLabel = cleanText(label, 24);
+  if ((isZhLocale(locale) || isJaLocale(locale)) && isDefaultStateLabel(cleanLabel, state)) {
+    return stateLabelForLocale(state, locale);
+  }
+  return cleanLabel.length() ? cleanLabel : stateLabelForLocale(state, locale);
+}
+
 static String displayStateLabel() {
-  return pet.stateLabel.length() ? pet.stateLabel : stateLabel(pet.state);
+  return localizedStateLabel(pet.state, pet.locale, pet.stateLabel);
 }
 
 static String normalizePacketState(const String &state) {
@@ -570,6 +641,44 @@ static int petBob() {
   if (pet.state == "juggling") return (frameIndex % 4) - 2;
   return (frameIndex % 2) ? -1 : 0;
 }
+
+#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+static int petImageShiftX() {
+  if (pet.state == "thinking") {
+    switch (frameIndex % 4) {
+      case 0: return -2;
+      case 2: return 2;
+      default: return 0;
+    }
+  }
+  if (pet.state == "juggling") return ((frameIndex % 4) - 2) * 2;
+  if (pet.state == "sweeping") return (frameIndex % 2) ? 3 : -3;
+  return 0;
+}
+
+static int16_t petImageAngle() {
+  if (pet.state == "thinking") {
+    switch (frameIndex % 4) {
+      case 0: return -25;
+      case 2: return 25;
+      default: return 0;
+    }
+  }
+  if (pet.state == "juggling") return static_cast<int16_t>(((frameIndex % 4) - 2) * 18);
+  if (pet.state == "sweeping") return (frameIndex % 2) ? 18 : -18;
+  return 0;
+}
+
+static uint16_t petImageZoom() {
+  if (pet.state == "working" || pet.state == "typing" || pet.state == "building") {
+    return (frameIndex % 2) ? 262 : 256;
+  }
+  if (pet.state == "attention" || pet.state == "notification" || pet.state == "error") {
+    return (frameIndex % 2) ? 266 : 256;
+  }
+  return 256;
+}
+#endif
 
 static void renderPetFace(int16_t cx, int16_t cy, int16_t scale, uint16_t body, uint16_t accent, uint16_t ink, uint16_t face) {
   int bob = petBob();
@@ -879,26 +988,37 @@ static void updateFooterTicker(const String &text, bool connected) {
 static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, uint16_t ink, uint16_t muted, uint16_t accent) {
   ensureLvglUi();
   const bool connected = bleConnected;
-  String renderSlug = pet.personaSlug.length() ? pet.personaSlug : String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
-  String renderState = connected ? pet.state : String("idle");
+  const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
+  String renderSlug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
+  String renderState = normalizePacketState(connected ? pet.state : String("idle"));
   const bool imageLoading = connected && dynamicPersonaReceiving && dynamicPersonaShowLoading &&
                             dynamicPersonaTransferSlug == renderSlug &&
                             dynamicPersonaTransferState == normalizePacketState(renderState);
   const uint8_t imageProgress = imageLoading ? dynamicPersonaProgressPercent() : 0;
-  const lv_img_dsc_t *frame = imageLoading && dynamicPersonaReady ? dynamicPersonaFrameForSlug(dynamicPersonaSlug, dynamicPersonaState) : dynamicPersonaFrameForSlug(renderSlug, renderState);
-  if (!frame && dynamicPersonaReady && renderSlug == dynamicPersonaSlug) {
-    frame = dynamicPersonaFrameForSlugAnyState(renderSlug);
-  }
+  const lv_img_dsc_t *frame = dynamicPersonaFrameForSlug(renderSlug, renderState);
+  bool frameUsesCurrentPersona = frame != nullptr;
   if (!frame) {
     frame = codePetPersonaFrame(renderSlug, renderState, frameIndex);
+    frameUsesCurrentPersona = frame != nullptr;
+  }
+  if (!frame && dynamicPersonaReady && renderSlug == dynamicPersonaSlug) {
+    frame = dynamicPersonaFrameForSlugAnyState(renderSlug);
+    frameUsesCurrentPersona = frame != nullptr;
+  }
+  if (!frame && connected) {
+    frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
+    frameUsesCurrentPersona = false;
   }
   if (!frame && !connected && dynamicPersonaReady) {
     frame = dynamicPersonaFrameForSlug(dynamicPersonaSlug, dynamicPersonaState);
+    frameUsesCurrentPersona = frame != nullptr;
   }
-  if (!frame && !pet.personaSlug.length()) {
-    frame = codePetPersonaFrame(String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG), renderState, frameIndex);
+  if (!frame) {
+    frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
+    frameUsesCurrentPersona = false;
   }
-  if (!frame) return false;
+  const bool showFallbackPanel = frame == nullptr;
+  if (showFallbackPanel && !connected && !pet.personaSlug.length()) return false;
 
   lv_obj_set_style_bg_color(lv_scr_act(), lvColor(bg), 0);
   lv_obj_set_style_bg_color(lvRoot, lvColor(bg), 0);
@@ -955,10 +1075,20 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   lv_label_set_text(lvFallbackState, fallbackState.c_str());
   lv_label_set_text(lvFallbackAgent, connected ? cleanText(pet.agent, 18).c_str() : "");
 
-  lv_img_set_src(lvImage, frame);
-  lv_obj_align(lvImage, LV_ALIGN_CENTER, 0, connected ? petBob() : ((frameIndex % 2) ? -1 : 0));
-  lv_obj_clear_flag(lvImage, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(lvFallback, LV_OBJ_FLAG_HIDDEN);
+  if (showFallbackPanel) {
+    lv_obj_add_flag(lvImage, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lvFallback, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_img_set_src(lvImage, frame);
+    lv_img_set_pivot(lvImage, CODE_PET_DYNAMIC_PERSONA_WIDTH / 2, CODE_PET_DYNAMIC_PERSONA_HEIGHT / 2);
+    lv_img_set_angle(lvImage, connected && frameUsesCurrentPersona ? petImageAngle() : 0);
+    lv_img_set_zoom(lvImage, connected && frameUsesCurrentPersona ? petImageZoom() : 256);
+    lv_obj_align(lvImage, LV_ALIGN_CENTER,
+                 connected && frameUsesCurrentPersona ? petImageShiftX() : 0,
+                 connected ? petBob() : ((frameIndex % 2) ? -1 : 0));
+    lv_obj_clear_flag(lvImage, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(lvFallback, LV_OBJ_FLAG_HIDDEN);
+  }
   lv_obj_move_foreground(lvHeaderShadow);
   lv_obj_move_foreground(lvHeader);
   lv_obj_move_foreground(lvStatusShadow);
@@ -1040,6 +1170,11 @@ static const lv_img_dsc_t *dynamicPersonaFrameForSlugAnyState(const String &slug
   if (count > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) count = CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES;
   uint8_t slot = count > 1 ? (frameIndex % count) : 0;
   return &dynamicPersonaImages[slot];
+}
+
+static void invalidateDynamicPersonaImage(uint8_t slot) {
+  if (slot >= CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) return;
+  lv_img_cache_invalidate_src(&dynamicPersonaImages[slot]);
 }
 
 static void clearDynamicPersonaFrame() {
@@ -1364,6 +1499,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
         dynamicPersonaRleIndex == 0) {
       dynamicPersonaReceiving = false;
       memcpy(dynamicPersonaPixels[dynamicPersonaTransferFrameIndex], dynamicPersonaPendingPixels, CODE_PET_DYNAMIC_PERSONA_BYTES);
+      invalidateDynamicPersonaImage(dynamicPersonaTransferFrameIndex);
       dynamicPersonaReady = true;
       dynamicPersonaSlug = dynamicPersonaTransferSlug;
       dynamicPersonaState = dynamicPersonaTransferState;
@@ -1420,6 +1556,8 @@ static void applyPacket(JsonVariantConst src) {
   String nextEvent = String(src["e"] | src["event"] | "");
   String nextTitle = String(src["m"] | src["title"] | "");
   String nextOutput = String(src["o"] | src["output"] | "");
+  String nextLocale = cleanText(String(src["l"] | src["locale"] | pet.locale), 12);
+  if (!nextLocale.length()) nextLocale = "en";
   JsonVariantConst persona = src["persona"];
   bool hasPersonaFields = !src["p"].isNull() || !src["d"].isNull() ||
                            !src["k"].isNull() || !src["u"].isNull() ||
@@ -1432,6 +1570,7 @@ static void applyPacket(JsonVariantConst src) {
   bool hasTheme = !src["th"].isNull() || !src["theme"].isNull();
   String nextTheme = hasTheme ? String(src["th"] | src["theme"] | "day") : pet.theme;
   int nextActiveCount = src["n"] | src["activeCount"] | 0;
+  nextStateLabel = localizedStateLabel(nextState, nextLocale, nextStateLabel);
 
 #if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
   if (dynamicPersonaReceiving &&
@@ -1446,6 +1585,7 @@ static void applyPacket(JsonVariantConst src) {
                  nextTitle != pet.title || nextOutput != pet.output || nextPersonaSlug != pet.personaSlug ||
                  nextPersonaName != pet.personaName || nextPersonaKind != pet.personaKind ||
                  nextSpriteUrl != pet.spriteUrl || nextTheme != pet.theme ||
+                 nextLocale != pet.locale ||
                  nextActiveCount != pet.activeCount;
 
   pet.state = cleanText(nextState, 24);
@@ -1460,6 +1600,7 @@ static void applyPacket(JsonVariantConst src) {
   pet.spriteUrl = nextSpriteUrl;
   nextTheme = cleanText(nextTheme, 12);
   pet.theme = (nextTheme == "night" || nextTheme == "dark") ? nextTheme : "day";
+  pet.locale = nextLocale;
   pet.activeCount = nextActiveCount;
   pet.receivedAt = millis();
   if (changed) markDirty();
@@ -1540,6 +1681,80 @@ static bool dequeuePayload(String &payload) {
   return true;
 }
 
+static void clearBleFragment() {
+  incomingBleFragment = "";
+  incomingBleFragmentId = '\0';
+  incomingBleFragmentExpectedBytes = 0;
+  incomingBleFragmentActive = false;
+}
+
+static bool parseBleFragmentStart(const std::string &value, char &id, size_t &expectedBytes) {
+  if (value.length() < 4 || value[0] != '#' || value[2] != ':') return false;
+  id = value[1];
+  expectedBytes = 0;
+  for (size_t i = 3; i < value.length(); i++) {
+    char c = value[i];
+    if (c < '0' || c > '9') return false;
+    expectedBytes = expectedBytes * 10 + static_cast<size_t>(c - '0');
+    if (expectedBytes > CODE_PET_BLE_FRAGMENT_MAX_BYTES) return false;
+  }
+  return expectedBytes > 0;
+}
+
+static String stringFromBleBytes(const std::string &value, size_t offset = 0) {
+  String out;
+  if (offset >= value.length()) return out;
+  out.reserve(value.length() - offset);
+  for (size_t i = offset; i < value.length(); i++) out += static_cast<char>(value[i]);
+  return out;
+}
+
+static void appendBleFragmentBytes(const std::string &value, size_t offset) {
+  for (size_t i = offset; i < value.length(); i++) incomingBleFragment += static_cast<char>(value[i]);
+}
+
+static void enqueueCompletedBleFragment() {
+  if (incomingBleFragment.length() == incomingBleFragmentExpectedBytes) enqueuePayload(incomingBleFragment);
+  clearBleFragment();
+}
+
+static void handleBleWriteValue(const std::string &value) {
+  if (!value.length()) return;
+  char marker = value[0];
+  if (marker == '#') {
+    char id = '\0';
+    size_t expectedBytes = 0;
+    clearBleFragment();
+    if (!parseBleFragmentStart(value, id, expectedBytes)) return;
+    incomingBleFragmentId = id;
+    incomingBleFragmentExpectedBytes = expectedBytes;
+    incomingBleFragmentActive = true;
+    incomingBleFragment.reserve(expectedBytes);
+    return;
+  }
+
+  if (marker == '+') {
+    if (!incomingBleFragmentActive || value.length() < 2 || value[1] != incomingBleFragmentId) return;
+    size_t nextLength = incomingBleFragment.length() + value.length() - 2;
+    if (nextLength > incomingBleFragmentExpectedBytes || nextLength > CODE_PET_BLE_FRAGMENT_MAX_BYTES) {
+      clearBleFragment();
+      return;
+    }
+    appendBleFragmentBytes(value, 2);
+    if (incomingBleFragment.length() >= incomingBleFragmentExpectedBytes) enqueueCompletedBleFragment();
+    return;
+  }
+
+  if (marker == '!') {
+    if (incomingBleFragmentActive && value.length() >= 2 && value[1] == incomingBleFragmentId) {
+      enqueueCompletedBleFragment();
+    }
+    return;
+  }
+
+  enqueuePayload(stringFromBleBytes(value));
+}
+
 #if defined(CODE_PET_HAS_BLE)
 static void restartAdvertising() {
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
@@ -1561,6 +1776,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     (void)server;
     bleConnected = false;
     clearPayloadQueue();
+    clearBleFragment();
     setDisconnectedPetState();
     noteDisplayActivity();
     markDirty();
@@ -1572,13 +1788,13 @@ class StateCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
     noteDisplayActivity();
     std::string value = characteristic->getValue();
-    if (!value.length()) return;
-    enqueuePayload(String(value.c_str()));
+    handleBleWriteValue(value);
   }
 };
 
 static void setupBle() {
   BLEDevice::init(CODE_PET_DEVICE_NAME);
+  BLEDevice::setMTU(CODE_PET_BLE_MTU);
   BLEServer *server = BLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
   BLEService *service = server->createService(SERVICE_UUID);
