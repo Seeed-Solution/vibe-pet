@@ -9,6 +9,7 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const APP_NAME = "Vibe Pet";
 const DEFAULT_OUT = "dist";
 const ICON_BASE = path.join(ROOT, "src", "desktop", "assets", "app-icon");
+const TRAY_TEMPLATE_ICON = path.join(ROOT, "src", "desktop", "assets", "tray-iconTemplate.png");
 const ICON_SCRIPT = path.join(ROOT, "src", "scripts", "generate-icons.js");
 const CHECK_SCRIPT = path.join(ROOT, "src", "scripts", "check.js");
 const PLATFORM_ALIASES = {
@@ -138,7 +139,7 @@ function ensureDependencies() {
 
 function requiredIconFiles(platform) {
   const files = [`${ICON_BASE}.png`];
-  if (platform === "darwin" || platform === "all") files.push(`${ICON_BASE}.icns`);
+  if (platform === "darwin" || platform === "all") files.push(`${ICON_BASE}.icns`, TRAY_TEMPLATE_ICON);
   if (platform === "win32" || platform === "all") files.push(`${ICON_BASE}.ico`);
   return files;
 }

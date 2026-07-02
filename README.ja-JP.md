@@ -74,7 +74,7 @@ Vibe Pet は以下の AI エージェントの hooks またはプラグイン設
 | [ESP-AI-MINI AI開発キット](https://espai.fun/open/pcb/mini-ext/1.0.0/) | ESP32-S3 ベースの AI 開発キット | BLE | Ing | TFT ターゲット。LVGL キャラクター描画。 |
 | [ESP-AI v3 開発ボード](https://espai.fun/open/pcb/common/3.0.0/) | ESP32-S3 ベースの AI 開発キット | BLE | Ing | TFT ターゲット。LVGL キャラクター描画。 |
 | [ESP-AI v4 開発ボード](https://espai.fun/open/pcb/common/4.0.0/) | ESP32-S3 ベースの AI 開発キット | BLE | Ing | TFT ターゲット。LVGL キャラクター描画。 |
-| [M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3) | ESP32-S3 カラータッチディスプレイ | BLE | Ing | M5Unified の ESP32-S3 ターゲットです。 |
+| [SenseCAP Indicator](https://wiki.seeedstudio.com/ja/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) | 4インチ 480×480 タッチディスプレイ | BLE | Ing | ESP32-S3 + RP2040；ST7701S RGB ディスプレイ；LVGL キャラクター描画。 |
 
 Vibe Pet を自分のハードウェアに対応させることも歓迎します。BLE と Wi-Fi のハードウェア向けペイロードは小さく保っているため、新しい画面、ステータスライト、バッジ型デバイス、カスタムボードもデスクトップアプリの中核を変えずに追加できます。
 

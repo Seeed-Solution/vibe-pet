@@ -47,6 +47,7 @@ const APP_ICON_PNG = `${APP_ICON_BASE}.png`;
 const APP_ICON_ICNS = `${APP_ICON_BASE}.icns`;
 const APP_ICON_ICO = `${APP_ICON_BASE}.ico`;
 const TRAY_ICON_PNG = path.join(DESKTOP_ASSET_DIR, "tray-icon.png");
+const TRAY_TEMPLATE_ICON_PNG = path.join(DESKTOP_ASSET_DIR, "tray-iconTemplate.png");
 const LOGO_PNG = path.join(DESKTOP_ASSET_DIR, "logo.png");
 const HOST_DIR = path.join(__dirname, "..", "host");
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -495,7 +496,12 @@ function appIconImage(size) {
 }
 
 function trayIconImage(size) {
-  return iconImage([TRAY_ICON_PNG, APP_ICON_PNG, LOGO_PNG], size);
+  const paths = process.platform === "darwin"
+    ? [TRAY_TEMPLATE_ICON_PNG, TRAY_ICON_PNG, APP_ICON_PNG, LOGO_PNG]
+    : [TRAY_ICON_PNG, APP_ICON_PNG, LOGO_PNG];
+  const image = iconImage(paths, size);
+  if (process.platform === "darwin" && !image.isEmpty()) image.setTemplateImage(true);
+  return image;
 }
 
 function setupAppIcon() {

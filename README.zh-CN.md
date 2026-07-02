@@ -75,7 +75,7 @@ Vibe Pet 会默认尝试同步这些 AI 编程助手的 hooks 或插件配置：
 | [ESP-AI-MINI AI开发套件](https://espai.fun/open/pcb/mini-ext/1.0.0/) | 基于 ESP32-S3 的 AI 开发套件 | BLE | Ing | TFT 目标；LVGL 角色渲染。 |
 | [ESP-AI v3 开发板](https://espai.fun/open/pcb/common/3.0.0/) | 基于 ESP32-S3 的 AI 开发套件 | BLE | Ing | TFT 目标；LVGL 角色渲染。 |
 | [ESP-AI v4开发板](https://espai.fun/open/pcb/common/4.0.0/) | 基于 ESP32-S3 的 AI 开发套件 | BLE | Ing | TFT 目标；LVGL 角色渲染。 |
-| [M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3) | ESP32-S3 彩色触摸屏 | BLE | Ing | M5Unified 的 ESP32-S3 目标。 |
+| [SenseCAP Indicator](https://wiki.seeedstudio.com/cn/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) | 4 英寸 480×480 触控屏 | BLE | Ing | ESP32-S3 + RP2040；ST7701S RGB 显示屏；LVGL 角色渲染。 |
 
 也欢迎把 Vibe Pet 适配到你自己的硬件上。BLE 和 Wi-Fi 硬件负载本身很轻量，新的屏幕、状态灯、徽章设备或自定义开发板都可以在不改桌面端核心逻辑的情况下接入。
 

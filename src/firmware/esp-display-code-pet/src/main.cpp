@@ -19,7 +19,10 @@
 #include <Adafruit_NeoPixel.h>
 #endif
 
-#if defined(CODE_PET_HAS_BLE)
+#if defined(CODE_PET_HAS_RPC_BLE)
+#include <rpcBLEDevice.h>
+#include <BLEServer.h>
+#elif defined(CODE_PET_HAS_BLE)
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -124,6 +127,34 @@ uint8_t frameIndex = 0;
 unsigned long lastFrameAt = 0;
 unsigned long lastPollAt = 0;
 unsigned long lastWifiAttemptAt = 0;
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+bool localTestActive = false;
+#endif
+
+static void markDirty();
+static bool displayConnected() {
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+  return bleConnected || localTestActive;
+#else
+  return bleConnected;
+#endif
+}
+
+#if (defined(CODE_PET_USE_LVGL) || defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA)) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#ifndef CODE_PET_DYNAMIC_PERSONA_WIDTH
+#define CODE_PET_DYNAMIC_PERSONA_WIDTH 144
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_HEIGHT
+#define CODE_PET_DYNAMIC_PERSONA_HEIGHT 156
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES
+#define CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES 2
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_STATE_COUNT
+#define CODE_PET_DYNAMIC_PERSONA_STATE_COUNT 6
+#endif
+#define CODE_PET_DYNAMIC_PERSONA_BYTES (CODE_PET_DYNAMIC_PERSONA_WIDTH * CODE_PET_DYNAMIC_PERSONA_HEIGHT * 2)
+#endif
 
 #if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
 static lv_disp_draw_buf_t lvDrawBuffer;
@@ -153,20 +184,6 @@ static lv_obj_t *lvLoadFill = nullptr;
 static uint32_t lvLastTickAt = 0;
 static String lvFooterTickerText = "";
 static bool lvFooterTickerDone = false;
-
-#ifndef CODE_PET_DYNAMIC_PERSONA_WIDTH
-#define CODE_PET_DYNAMIC_PERSONA_WIDTH 144
-#endif
-#ifndef CODE_PET_DYNAMIC_PERSONA_HEIGHT
-#define CODE_PET_DYNAMIC_PERSONA_HEIGHT 156
-#endif
-#ifndef CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES
-#define CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES 2
-#endif
-#ifndef CODE_PET_DYNAMIC_PERSONA_STATE_COUNT
-#define CODE_PET_DYNAMIC_PERSONA_STATE_COUNT 6
-#endif
-#define CODE_PET_DYNAMIC_PERSONA_BYTES (CODE_PET_DYNAMIC_PERSONA_WIDTH * CODE_PET_DYNAMIC_PERSONA_HEIGHT * 2)
 
 enum DynamicPersonaFormat : uint8_t {
   DYNAMIC_PERSONA_RAW_RGB565,
@@ -541,7 +558,7 @@ static void updateStatusPixel() {
   uint8_t r, g, b;
   stateRgb(pet.state, r, g, b);
   uint8_t brightness = CP_STATUS_PIXEL_BRIGHTNESS;
-  if (!bleConnected) {
+  if (!displayConnected()) {
     brightness = (frameIndex % 2) ? 20 : 4;
   } else if (pet.state == "notification" || pet.state == "permission" || pet.state == "error") {
     brightness = (frameIndex % 2) ? 96 : 8;
@@ -1014,7 +1031,7 @@ static void updateFooterTicker(const String &text, bool connected) {
 
 static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, uint16_t ink, uint16_t muted, uint16_t accent) {
   ensureLvglUi();
-  const bool connected = bleConnected;
+  const bool connected = displayConnected();
   const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
   String renderSlug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
   String renderState = normalizePacketState(connected ? pet.state : String("idle"));
@@ -1126,10 +1143,329 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
 }
 #endif
 
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+enum SimpleDynamicPersonaFormat : uint8_t {
+  SIMPLE_DYNAMIC_PERSONA_RAW_RGB565,
+  SIMPLE_DYNAMIC_PERSONA_RLE_RGB565,
+};
+
+static uint8_t simpleDynamicPersonaPixels[CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES][CODE_PET_DYNAMIC_PERSONA_BYTES];
+static String simpleDynamicPersonaId = "";
+static String simpleDynamicPersonaSlug = "";
+static String simpleDynamicPersonaState = "idle";
+static String simpleDynamicPersonaTransferSlug = "";
+static String simpleDynamicPersonaTransferState = "idle";
+static bool simpleDynamicPersonaReady = false;
+static bool simpleDynamicPersonaReceiving = false;
+static bool simpleDynamicPersonaShowLoading = true;
+static SimpleDynamicPersonaFormat simpleDynamicPersonaFormat = SIMPLE_DYNAMIC_PERSONA_RAW_RGB565;
+static uint16_t simpleDynamicPersonaExpectedSeq = 0;
+static uint32_t simpleDynamicPersonaReceived = 0;
+static uint8_t simpleDynamicPersonaFrameCount = 1;
+static uint8_t simpleDynamicPersonaTransferFrameCount = 1;
+static uint8_t simpleDynamicPersonaTransferFrameIndex = 0;
+static uint8_t simpleDynamicPersonaReceivedFrameMask = 0;
+static uint8_t simpleDynamicPersonaLastProgressPercent = 0;
+static uint8_t simpleDynamicPersonaRleTriple[3] = {0, 0, 0};
+static uint8_t simpleDynamicPersonaRleIndex = 0;
+static const char *SIMPLE_DYNAMIC_PERSONA_STATE_NAMES[CODE_PET_DYNAMIC_PERSONA_STATE_COUNT] = {
+  "idle", "notification", "working", "error", "thinking", "attention"
+};
+
+static String simpleDynamicPersonaVisualState(const String &state) {
+  String clean = normalizePacketState(state);
+  if (clean == "sleeping") return "idle";
+  if (clean == "typing" || clean == "building" || clean == "juggling") return "working";
+  if (clean == "sweeping") return "thinking";
+  return clean;
+}
+
+static int8_t simpleDynamicPersonaStateIndex(const String &state) {
+  String visual = simpleDynamicPersonaVisualState(state);
+  for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) {
+    if (visual == SIMPLE_DYNAMIC_PERSONA_STATE_NAMES[i]) return static_cast<int8_t>(i);
+  }
+  return -1;
+}
+
+static uint8_t simpleDynamicPersonaProgressPercent() {
+  uint8_t completeFrames = 0;
+  for (uint8_t i = 0; i < simpleDynamicPersonaTransferFrameCount; i++) {
+    if (simpleDynamicPersonaReceivedFrameMask & (1U << i)) completeFrames++;
+  }
+  uint32_t total = static_cast<uint32_t>(simpleDynamicPersonaTransferFrameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  uint32_t received = simpleDynamicPersonaReceived;
+  if (received > CODE_PET_DYNAMIC_PERSONA_BYTES) received = CODE_PET_DYNAMIC_PERSONA_BYTES;
+  received += static_cast<uint32_t>(completeFrames) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  if (total == 0) return 0;
+  if (received > total) received = total;
+  return static_cast<uint8_t>((received * 100U) / total);
+}
+
+static bool simpleDynamicPersonaMatchesCurrent() {
+  return displayConnected() &&
+         simpleDynamicPersonaReady &&
+         simpleDynamicPersonaSlug.length() &&
+         simpleDynamicPersonaSlug == pet.personaSlug &&
+         simpleDynamicPersonaState == simpleDynamicPersonaVisualState(pet.state);
+}
+
+static bool simpleDynamicPersonaLoadingCurrent() {
+  return displayConnected() &&
+         simpleDynamicPersonaReceiving &&
+         simpleDynamicPersonaShowLoading &&
+         simpleDynamicPersonaTransferSlug == pet.personaSlug &&
+         simpleDynamicPersonaTransferState == simpleDynamicPersonaVisualState(pet.state);
+}
+
+static bool simpleDynamicPersonaScreen() {
+  return simpleDynamicPersonaLoadingCurrent() || simpleDynamicPersonaMatchesCurrent();
+}
+
+static void simpleAbortDynamicPersonaTransfer() {
+  simpleDynamicPersonaReceiving = false;
+  simpleDynamicPersonaShowLoading = true;
+  simpleDynamicPersonaId = "";
+  simpleDynamicPersonaTransferSlug = "";
+  simpleDynamicPersonaTransferState = "idle";
+  simpleDynamicPersonaExpectedSeq = 0;
+  simpleDynamicPersonaReceived = 0;
+  simpleDynamicPersonaTransferFrameCount = 1;
+  simpleDynamicPersonaTransferFrameIndex = 0;
+  simpleDynamicPersonaReceivedFrameMask = 0;
+  simpleDynamicPersonaLastProgressPercent = 0;
+  simpleDynamicPersonaRleIndex = 0;
+  markDirty();
+}
+
+static void simpleClearDynamicPersonaFrame() {
+  simpleDynamicPersonaReady = false;
+  simpleAbortDynamicPersonaTransfer();
+  simpleDynamicPersonaSlug = "";
+  simpleDynamicPersonaState = "idle";
+  simpleDynamicPersonaFrameCount = 1;
+}
+
+static int8_t simpleBase64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+static bool simpleAppendDynamicPersonaDecodedByte(uint8_t value) {
+  if (simpleDynamicPersonaTransferFrameIndex >= CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) return false;
+  uint8_t *pixels = simpleDynamicPersonaPixels[simpleDynamicPersonaTransferFrameIndex];
+
+  if (simpleDynamicPersonaFormat == SIMPLE_DYNAMIC_PERSONA_RLE_RGB565) {
+    simpleDynamicPersonaRleTriple[simpleDynamicPersonaRleIndex++] = value;
+    if (simpleDynamicPersonaRleIndex < 3) return true;
+
+    uint8_t lo = simpleDynamicPersonaRleTriple[0];
+    uint8_t hi = simpleDynamicPersonaRleTriple[1];
+    uint8_t count = simpleDynamicPersonaRleTriple[2];
+    simpleDynamicPersonaRleIndex = 0;
+    if (count == 0) return false;
+    for (uint8_t i = 0; i < count; i++) {
+      if (simpleDynamicPersonaReceived + 2 > CODE_PET_DYNAMIC_PERSONA_BYTES) return false;
+      pixels[simpleDynamicPersonaReceived++] = lo;
+      pixels[simpleDynamicPersonaReceived++] = hi;
+    }
+    return true;
+  }
+
+  if (simpleDynamicPersonaReceived >= CODE_PET_DYNAMIC_PERSONA_BYTES) return false;
+  pixels[simpleDynamicPersonaReceived++] = value;
+  return true;
+}
+
+static bool simpleAppendDynamicPersonaBase64(const String &encoded) {
+  int value = 0;
+  int bits = -8;
+  for (size_t i = 0; i < encoded.length(); i++) {
+    char c = encoded[i];
+    if (c == '=') break;
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+    int8_t digit = simpleBase64Value(c);
+    if (digit < 0) return false;
+    value = (value << 6) | digit;
+    bits += 6;
+    if (bits >= 0) {
+      if (!simpleAppendDynamicPersonaDecodedByte(static_cast<uint8_t>((value >> bits) & 0xFF))) return false;
+      bits -= 8;
+    }
+  }
+  return true;
+}
+
+static void simpleApplyDynamicPersonaPayload(JsonVariantConst src) {
+  String op = String(src["im"] | "");
+
+  if (op == "s") {
+    String id = cleanText(String(src["id"] | ""), 48);
+    String slug = cleanText(String(src["p"] | ""), 48);
+    String displayName = cleanText(String(src["d"] | src["displayName"] | ""), 48);
+    String kind = cleanText(String(src["k"] | src["kind"] | ""), 24);
+    String spriteUrl = String(src["u"] | src["spritesheetUrl"] | "");
+    String theme = cleanText(String(src["th"] | src["theme"] | ""), 12);
+    theme = (theme == "night" || theme == "dark") ? theme : "day";
+    String state = simpleDynamicPersonaVisualState(String(src["st"] | src["state"] | "idle"));
+    String format = String(src["f"] | "");
+    int width = src["w"] | 0;
+    int height = src["h"] | 0;
+    uint32_t size = src["z"] | 0;
+    bool showLoading = (src["ld"] | 1) != 0;
+    int frameCount = src["fc"] | 1;
+    int frameSlot = src["fr"] | 0;
+
+    if (!id.length() || !slug.length() ||
+        width != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
+        height != CODE_PET_DYNAMIC_PERSONA_HEIGHT ||
+        size != CODE_PET_DYNAMIC_PERSONA_BYTES ||
+        frameCount < 1 ||
+        frameCount > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES ||
+        frameSlot < 0 ||
+        frameSlot >= frameCount ||
+        (format != "rgb565" && format != "rgb565-rle") ||
+        simpleDynamicPersonaStateIndex(state) < 0) {
+      simpleAbortDynamicPersonaTransfer();
+      return;
+    }
+
+    if (state != simpleDynamicPersonaVisualState(pet.state)) {
+      simpleDynamicPersonaReceiving = false;
+      return;
+    }
+
+    if (frameSlot == 0) {
+      simpleDynamicPersonaReady = false;
+      simpleDynamicPersonaReceivedFrameMask = 0;
+      simpleDynamicPersonaTransferFrameCount = static_cast<uint8_t>(frameCount);
+      simpleDynamicPersonaTransferSlug = slug;
+      simpleDynamicPersonaTransferState = state;
+    } else if (id != simpleDynamicPersonaId ||
+               slug != simpleDynamicPersonaTransferSlug ||
+               state != simpleDynamicPersonaTransferState ||
+               frameCount != simpleDynamicPersonaTransferFrameCount ||
+               (simpleDynamicPersonaReceivedFrameMask & (1U << frameSlot))) {
+      simpleAbortDynamicPersonaTransfer();
+      return;
+    }
+
+    simpleDynamicPersonaReceiving = true;
+    simpleDynamicPersonaShowLoading = showLoading;
+    simpleDynamicPersonaId = id;
+    simpleDynamicPersonaTransferFrameIndex = static_cast<uint8_t>(frameSlot);
+    simpleDynamicPersonaFormat = format == "rgb565-rle" ? SIMPLE_DYNAMIC_PERSONA_RLE_RGB565 : SIMPLE_DYNAMIC_PERSONA_RAW_RGB565;
+    simpleDynamicPersonaExpectedSeq = 0;
+    simpleDynamicPersonaReceived = 0;
+    simpleDynamicPersonaLastProgressPercent = 0;
+    simpleDynamicPersonaRleIndex = 0;
+    pet.personaSlug = slug;
+    if (displayName.length()) pet.personaName = displayName;
+    if (kind.length()) pet.personaKind = kind;
+    if (!src["u"].isNull() || !src["spritesheetUrl"].isNull()) pet.spriteUrl = spriteUrl;
+    if (theme.length()) pet.theme = theme;
+    markDirty();
+    return;
+  }
+
+  if (op == "x") {
+    String id = String(src["id"] | "");
+    if (!id.length() || id == simpleDynamicPersonaId) simpleAbortDynamicPersonaTransfer();
+    return;
+  }
+
+  if (op == "c") {
+    String id = String(src["id"] | "");
+    int seq = src["q"] | -1;
+    if (!simpleDynamicPersonaReceiving || id != simpleDynamicPersonaId || seq != simpleDynamicPersonaExpectedSeq) return;
+    String data = String(src["d"] | "");
+    if (!data.length() || !simpleAppendDynamicPersonaBase64(data)) {
+      simpleAbortDynamicPersonaTransfer();
+      return;
+    }
+    simpleDynamicPersonaExpectedSeq++;
+    uint8_t progress = simpleDynamicPersonaProgressPercent();
+    if (progress != simpleDynamicPersonaLastProgressPercent) {
+      simpleDynamicPersonaLastProgressPercent = progress;
+      if (simpleDynamicPersonaShowLoading) markDirty();
+    }
+    return;
+  }
+
+  if (op == "e") {
+    String id = String(src["id"] | "");
+    if (simpleDynamicPersonaReceiving && id == simpleDynamicPersonaId &&
+        simpleDynamicPersonaReceived == CODE_PET_DYNAMIC_PERSONA_BYTES &&
+        simpleDynamicPersonaRleIndex == 0) {
+      simpleDynamicPersonaReceiving = false;
+      simpleDynamicPersonaReady = true;
+      simpleDynamicPersonaSlug = simpleDynamicPersonaTransferSlug;
+      simpleDynamicPersonaState = simpleDynamicPersonaTransferState;
+      simpleDynamicPersonaReceivedFrameMask |= (1U << simpleDynamicPersonaTransferFrameIndex);
+      if (simpleDynamicPersonaReceivedFrameMask & 0x01) simpleDynamicPersonaFrameCount = 1;
+      uint8_t completeMask = (1U << simpleDynamicPersonaTransferFrameCount) - 1U;
+      if ((simpleDynamicPersonaReceivedFrameMask & completeMask) == completeMask) {
+        simpleDynamicPersonaFrameCount = simpleDynamicPersonaTransferFrameCount;
+        simpleDynamicPersonaTransferSlug = "";
+        simpleDynamicPersonaTransferState = simpleDynamicPersonaState;
+        simpleDynamicPersonaLastProgressPercent = 100;
+      }
+      markDirty();
+    } else if (simpleDynamicPersonaReceiving) {
+      simpleAbortDynamicPersonaTransfer();
+    }
+  }
+}
+
+static void renderSimpleDynamicPersonaContent(uint16_t bg, uint16_t panel, uint16_t ink, uint16_t accent) {
+  const int16_t sw = screenW();
+  const int16_t sh = screenH();
+  int16_t contentH = sh > 56 ? sh - 56 : 0;
+  fillRect(0, 32, sw, contentH, bg);
+
+  if (simpleDynamicPersonaLoadingCurrent()) {
+    const uint8_t progress = simpleDynamicPersonaProgressPercent();
+    int16_t panelW = sw > 32 ? sw - 32 : 96;
+    if (panelW < 96) panelW = 96;
+    if (panelW > 164) panelW = 164;
+    const int16_t panelX = (sw - panelW) / 2;
+    int16_t panelY = (sh - 56) / 2;
+    if (panelY < 54) panelY = 54;
+    const int16_t trackW = panelW - 24;
+    fillRoundRect(panelX, panelY, panelW, 56, 10, panel);
+    drawRoundRect(panelX, panelY, panelW, 56, 10, accent);
+    drawText("Syncing", panelX + 12, panelY + 13, 1, ink, panel);
+    drawText(String(progress) + "%", panelX + panelW - 38, panelY + 13, 1, accent, panel);
+    fillRoundRect(panelX + 12, panelY + 38, trackW, 8, 4, dimColor(ink, 20));
+    int16_t fillWidth = (trackW * progress) / 100;
+    if (fillWidth < 1) fillWidth = 1;
+    fillRoundRect(panelX + 12, panelY + 38, fillWidth, 8, 4, accent);
+    return;
+  }
+
+  if (!simpleDynamicPersonaMatchesCurrent()) return;
+  uint8_t count = simpleDynamicPersonaFrameCount;
+  if (count < 1) count = 1;
+  if (count > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) count = CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES;
+  uint8_t slot = count > 1 ? (frameIndex % count) : 0;
+  int16_t x = (sw - CODE_PET_DYNAMIC_PERSONA_WIDTH) / 2;
+  int16_t y = (sh - CODE_PET_DYNAMIC_PERSONA_HEIGHT) / 2;
+  if (y < 36) y = 36;
+  if (y + CODE_PET_DYNAMIC_PERSONA_HEIGHT > sh - 24) y = sh - 24 - CODE_PET_DYNAMIC_PERSONA_HEIGHT;
+  if (y < 32) y = 32;
+  tft.pushImage(x, y, CODE_PET_DYNAMIC_PERSONA_WIDTH, CODE_PET_DYNAMIC_PERSONA_HEIGHT, reinterpret_cast<uint16_t *>(simpleDynamicPersonaPixels[slot]));
+}
+#endif
+
 static void renderScreen() {
   updateStatusPixel();
 
   const bool oled = screenW() <= 128 && screenH() <= 64;
+  const bool connected = displayConnected();
   const bool night = isNightTheme();
   uint16_t bg = oled || night ? 0 : rgb565(238, 244, 247);
   uint16_t header = oled ? 0 : rgb565(24, 32, 42);
@@ -1151,9 +1487,9 @@ static void renderScreen() {
   fillScreen(bg);
 
   if (oled) {
-    drawText(bleConnected ? cleanText(pet.agent, 12) : "", 0, 0, 1, 1, 0);
-    drawText(bleConnected ? cleanText(displayStateLabel(), 12) : "", 0, 10, 1, 1, 0);
-    drawText(bleConnected ? cleanText(pet.output, 18) : String(CODE_PET_DISCONNECTED_LABEL), 0, screenH() - 10, 1, 1, 0);
+    drawText(connected ? cleanText(pet.agent, 12) : "", 0, 0, 1, 1, 0);
+    drawText(connected ? cleanText(displayStateLabel(), 12) : "", 0, 10, 1, 1, 0);
+    drawText(connected ? cleanText(pet.output, 18) : String(CODE_PET_DISCONNECTED_LABEL), 0, screenH() - 10, 1, 1, 0);
     renderPetFace(screenW() - 38, screenH() / 2 + 2, 7, 0, 1, 1, 0);
     displayFlush();
     return;
@@ -1161,19 +1497,31 @@ static void renderScreen() {
 
   int16_t w = screenW();
   int16_t h = screenH();
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  bool simplePersonaScreen = simpleDynamicPersonaScreen();
+#else
+  bool simplePersonaScreen = false;
+#endif
   fillRect(0, 0, w, 32, header);
   drawText("Vibe Pet", 8, 9, 1, rgb565(255, 255, 255), header);
-  drawText(bleConnected ? "BLE" : "WAIT", w - 42, 9, 1, bleConnected ? rgb565(113, 210, 159) : rgb565(190, 198, 209), header);
+  String connectionText = connected ? (bleConnected ? "BLE" : "TEST") : "WAIT";
+  drawText(connectionText, w - 42, 9, 1, connected ? rgb565(113, 210, 159) : rgb565(190, 198, 209), header);
 
-  fillRoundRect(8, 40, w - 16, 34, 8, panel);
-  drawRoundRect(8, 40, w - 16, 34, 8, rgb565(215, 221, 231));
-  drawText(bleConnected ? cleanText(displayStateLabel(), 18) : "", 18, 50, 1, accent, panel);
-  drawText(bleConnected ? cleanText(pet.agent, 16) : "", w / 2, 50, 1, muted, panel);
-
-  renderPetFace(w / 2, h / 2 + 22, min(w, h) > 200 ? 13 : 10, body, accent, ink, face);
+  if (!simplePersonaScreen) {
+    fillRoundRect(8, 40, w - 16, 34, 8, panel);
+    drawRoundRect(8, 40, w - 16, 34, 8, rgb565(215, 221, 231));
+    drawText(connected ? cleanText(displayStateLabel(), 18) : "", 18, 50, 1, accent, panel);
+    drawText(connected ? cleanText(pet.agent, 16) : "", w / 2, 50, 1, muted, panel);
+    renderPetFace(w / 2, h / 2 + 22, min(w, h) > 200 ? 13 : 10, body, accent, ink, face);
+  }
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  else {
+    renderSimpleDynamicPersonaContent(bg, panel, ink, accent);
+  }
+#endif
 
   fillRect(0, h - 24, w, 24, header);
-  String footer = bleConnected ? cleanText(pet.output, 40) : String(CODE_PET_DISCONNECTED_LABEL);
+  String footer = connected ? cleanText(pet.output, 40) : String(CODE_PET_DISCONNECTED_LABEL);
   drawText(footer, 8, h - 17, 1, rgb565(255, 255, 255), header);
   displayFlush();
   uiDirty = false;
@@ -1654,6 +2002,8 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
 static void setDisconnectedPetState() {
 #if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
   abortDynamicPersonaTransfer();
+#elif defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  simpleAbortDynamicPersonaTransfer();
 #endif
   String currentTheme = pet.theme;
   bool changed = pet.state != "idle" || pet.stateLabel.length() || pet.agent.length() ||
@@ -1708,6 +2058,12 @@ static void applyPacket(JsonVariantConst src) {
       nextPersonaSlug != dynamicPersonaTransferSlug) {
     abortDynamicPersonaTransfer();
   }
+#elif defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  if (simpleDynamicPersonaReceiving &&
+      simpleDynamicPersonaTransferSlug.length() &&
+      nextPersonaSlug != simpleDynamicPersonaTransferSlug) {
+    simpleAbortDynamicPersonaTransfer();
+  }
 #endif
 
   bool changed = nextState != pet.state || nextStateLabel != pet.stateLabel ||
@@ -1753,6 +2109,13 @@ static void applyPayload(const String &payload) {
     applyDynamicPersonaPayload(doc.as<JsonVariantConst>());
     return;
   }
+#elif defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  if (doc["im"].is<const char *>()) {
+    simpleApplyDynamicPersonaPayload(doc.as<JsonVariantConst>());
+    return;
+  }
+#else
+  if (doc["im"].is<const char *>()) return;
 #endif
 
   if (doc["pets"].is<JsonArray>()) {
@@ -1885,7 +2248,7 @@ static void handleBleWriteValue(const std::string &value) {
   enqueuePayload(stringFromBleBytes(value));
 }
 
-#if defined(CODE_PET_HAS_BLE)
+#if defined(CODE_PET_HAS_BLE) || defined(CODE_PET_HAS_RPC_BLE)
 static void restartAdvertising() {
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(SERVICE_UUID);
@@ -1896,6 +2259,9 @@ static void restartAdvertising() {
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     (void)server;
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+    localTestActive = false;
+#endif
     bleConnected = true;
     clearDisconnectedPetState();
     noteDisplayActivity();
@@ -1904,6 +2270,9 @@ class ServerCallbacks : public BLEServerCallbacks {
 
   void onDisconnect(BLEServer *server) override {
     (void)server;
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+    localTestActive = false;
+#endif
     bleConnected = false;
     clearPayloadQueue();
     clearBleFragment();
@@ -1924,7 +2293,9 @@ class StateCallbacks : public BLECharacteristicCallbacks {
 
 static void setupBle() {
   BLEDevice::init(CODE_PET_DEVICE_NAME);
+#if defined(CODE_PET_HAS_BLE)
   BLEDevice::setMTU(CODE_PET_BLE_MTU);
+#endif
   BLEServer *server = BLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
   BLEService *service = server->createService(SERVICE_UUID);
@@ -1972,6 +2343,48 @@ static void pollBridge() {
 }
 #endif
 
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+static const char *CODE_PET_TEST_STATES[] = {
+  "idle", "thinking", "working", "juggling", "building",
+  "attention", "notification", "error", "sweeping", "sleeping"
+};
+static const uint8_t CODE_PET_TEST_STATE_COUNT = sizeof(CODE_PET_TEST_STATES) / sizeof(CODE_PET_TEST_STATES[0]);
+static uint8_t codePetTestIndex = 0;
+
+static void setupTestButton() {
+  pinMode(CODE_PET_TEST_BUTTON_PIN, INPUT_PULLUP);
+}
+
+static void handleTestButton() {
+  static bool wasDown = false;
+  bool down = digitalRead(CODE_PET_TEST_BUTTON_PIN) == LOW;
+  if (down && !wasDown) {
+    codePetTestIndex = (codePetTestIndex + 1) % CODE_PET_TEST_STATE_COUNT;
+    String nextState = normalizePacketState(String(CODE_PET_TEST_STATES[codePetTestIndex]));
+    localTestActive = true;
+    pet.state = nextState;
+    pet.stateLabel = localizedStateLabel(nextState, pet.locale, "");
+    pet.agent = "local";
+    pet.event = "button-test";
+    pet.title = "";
+    pet.output = "button-test";
+    if (!pet.personaSlug.length()) pet.personaSlug = "lulu";
+    if (!pet.personaName.length()) pet.personaName = "Lulu";
+    pet.activeCount = nextState == "idle" ? 0 : 1;
+    pet.receivedAt = millis();
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+    simpleClearDynamicPersonaFrame();
+#endif
+    noteDisplayActivity();
+    markDirty();
+  }
+  wasDown = down;
+}
+#else
+static void setupTestButton() {}
+static void handleTestButton() {}
+#endif
+
 void setup() {
   Serial.begin(115200);
   displayBegin();
@@ -1983,9 +2396,10 @@ void setup() {
   statusPixel.clear();
   statusPixel.show();
 #endif
+  setupTestButton();
   setDisconnectedPetState();
   markDirty();
-#if defined(CODE_PET_HAS_BLE)
+#if defined(CODE_PET_HAS_BLE) || defined(CODE_PET_HAS_RPC_BLE)
   setupBle();
 #endif
 #if defined(CODE_PET_USE_WIFI)
@@ -2012,6 +2426,8 @@ void loop() {
     if (!dequeuePayload(payload)) break;
     applyPayload(payload);
   }
+
+  handleTestButton();
 
 #if defined(CODE_PET_USE_WIFI)
   if (millis() - lastPollAt > 1000) {

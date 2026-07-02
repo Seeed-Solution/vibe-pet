@@ -394,6 +394,18 @@ function bluetoothDeviceCacheKey(nextDevice) {
   return id || name ? `${id}|${name}` : "";
 }
 
+function bluetoothDeviceName() {
+  return connectedBluetoothDeviceName || (device && typeof device.name === "string" ? device.name : "");
+}
+
+function isWioBluetoothDevice() {
+  return /^(VibePet|CodePet)-Wio/.test(bluetoothDeviceName());
+}
+
+function hardwarePersonaSyncMode() {
+  return isWioBluetoothDevice() ? "current-state" : "all-states";
+}
+
 function resetHardwarePersonaTransferState(options = {}) {
   if (options.forgetCache) {
     lastHardwarePersonaImageKey = "";
@@ -585,6 +597,24 @@ function petdexStateForHardware(state) {
   const raw = String(state || "idle").trim();
   if (raw === "permission" || raw === "codex-permission") return "notification";
   return PETDEX_ROW_BY_STATE[raw] === undefined ? "idle" : raw;
+}
+
+function hardwarePersonaVisualState(state) {
+  const normalized = petdexStateForHardware(state);
+  if (normalized === "sleeping") return "idle";
+  if (normalized === "typing" || normalized === "building" || normalized === "juggling") return "working";
+  if (normalized === "sweeping") return "thinking";
+  return normalized;
+}
+
+function hardwarePersonaSyncScope(packet) {
+  if (hardwarePersonaSyncMode() !== "current-state") return "all-states-v1";
+  return `state:${hardwarePersonaVisualState(packet && packet.s)}`;
+}
+
+function hardwarePersonaTransferStates(packet) {
+  if (hardwarePersonaSyncMode() !== "current-state") return HARDWARE_PERSONA_STATES;
+  return [hardwarePersonaVisualState(packet && packet.s)];
 }
 
 function formatStarCount(value) {
@@ -1245,9 +1275,9 @@ async function buildHardwarePersonaFrames(persona, state, theme) {
   return frames;
 }
 
-async function buildHardwarePersonaFrameBundle(persona, theme) {
+async function buildHardwarePersonaFrameBundle(persona, theme, states = HARDWARE_PERSONA_STATES) {
   const entries = [];
-  for (const state of HARDWARE_PERSONA_STATES) {
+  for (const state of states) {
     entries.push({
       state,
       frames: await buildHardwarePersonaFrames(persona, state, theme),
@@ -2595,6 +2625,7 @@ function hardwarePersonaLoadingSignature(hardwarePet, packet) {
     persona.slug || "",
     persona.spritesheetUrl || "",
     hardwarePersonaTransferTheme(packet),
+    hardwarePersonaSyncScope(packet),
   ].join("|");
 }
 
@@ -2606,7 +2637,7 @@ function hardwarePersonaTransferSignature(hardwarePet, packet) {
     persona.slug || "",
     persona.spritesheetUrl || "",
     hardwarePersonaTransferTheme(packet),
-    "all-states-v1",
+    hardwarePersonaSyncScope(packet),
   ].join("|");
 }
 
@@ -2650,9 +2681,10 @@ async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, sig
   activeHardwarePersonaTransferSignature = signature || "";
 
   const theme = hardwarePersonaTransferTheme(packet);
+  const states = hardwarePersonaTransferStates(packet);
   let bundle;
   try {
-    bundle = await buildHardwarePersonaFrameBundle(persona, theme);
+    bundle = await buildHardwarePersonaFrameBundle(persona, theme, states);
   } catch (err) {
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
     throw err;
