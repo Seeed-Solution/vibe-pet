@@ -8,7 +8,7 @@ const SESSION_TTL_MS = 10 * 60 * 1000;
 const CODEX_OFFICIAL_TTL_MS = 10 * 60 * 1000;
 const MAX_OUTPUT_CHARS = 1200;
 const DECAY_MS = {
-  thinking: 90000,
+  thinking: 300000,
   working: 180000,
   typing: 180000,
   building: 180000,
