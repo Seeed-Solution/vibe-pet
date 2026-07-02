@@ -70,11 +70,9 @@ Vibe Pet は以下の AI エージェントの hooks またはプラグイン設
 
 | ハードウェア | 表示 / 役割 | 同期方式 | 対応状況 | 補足 |
 | --- | --- | --- | --- | --- |
+| [SenseCAP Indicator](https://wiki.seeedstudio.com/ja/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) | 4インチ 480×480 タッチディスプレイ | BLE | Ing | ESP32-S3 + RP2040；ST7701S RGB ディスプレイ；LVGL キャラクター描画。 |
 | [Wio Terminal](https://www.seeedstudio.com/Wio-Terminal-p-4509.html) | メインのアニメーション表示デバイス | BLE | Ing | 安定した BLE アニメーション表示ターゲットです。 |
 | [ESP-AI-MINI AI開発キット](https://espai.fun/open/pcb/mini-ext/1.0.0/) | ESP32-S3 ベースの AI 開発キット | BLE | Ing | TFT ターゲット。LVGL キャラクター描画。 |
-| [ESP-AI v3 開発ボード](https://espai.fun/open/pcb/common/3.0.0/) | ESP32-S3 ベースの AI 開発キット | BLE | Ing | TFT ターゲット。LVGL キャラクター描画。 |
-| [ESP-AI v4 開発ボード](https://espai.fun/open/pcb/common/4.0.0/) | ESP32-S3 ベースの AI 開発キット | BLE | Ing | TFT ターゲット。LVGL キャラクター描画。 |
-| [SenseCAP Indicator](https://wiki.seeedstudio.com/ja/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) | 4インチ 480×480 タッチディスプレイ | BLE | Ing | ESP32-S3 + RP2040；ST7701S RGB ディスプレイ；LVGL キャラクター描画。 |
 
 Vibe Pet を自分のハードウェアに対応させることも歓迎します。BLE と Wi-Fi のハードウェア向けペイロードは小さく保っているため、新しい画面、ステータスライト、バッジ型デバイス、カスタムボードもデスクトップアプリの中核を変えずに追加できます。
 

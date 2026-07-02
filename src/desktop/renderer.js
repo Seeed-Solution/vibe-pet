@@ -67,6 +67,12 @@ const PETDEX_FRAME_SEQUENCE_BY_STATE = {
   attention: [0, 1, 2, 3, 2, 1],
   sweeping: [0, 1, 2, 1],
 };
+const HARDWARE_PERSONA_SEQUENCE_INDEXES_BY_STATE = {
+  working: [0, 2],
+  typing: [0, 2],
+  building: [0, 2],
+  juggling: [0, 2],
+};
 const HARDWARE_PERSONA_STATES = ["idle", "notification", "working", "error", "thinking", "attention"];
 const VIEW_STATE_PRIORITY = {
   error: 100,
@@ -1035,10 +1041,24 @@ function petdexFrameSequenceForState(state, cols) {
   return frames.length ? frames : [0];
 }
 
-function hardwarePersonaSequenceIndexes(sequence, maxFrames) {
+function hardwarePersonaSequenceIndexes(sequence, maxFrames, state = "") {
   const safeSequence = Array.isArray(sequence) && sequence.length ? sequence : [0];
   const count = Math.max(1, Math.min(maxFrames, safeSequence.length));
   if (count === 1) return [0];
+
+  const preferred = HARDWARE_PERSONA_SEQUENCE_INDEXES_BY_STATE[petdexStateForHardware(state)];
+  if (preferred) {
+    const usedFrames = new Set();
+    const indexes = [];
+    for (const index of preferred) {
+      if (indexes.length >= count || index < 0 || index >= safeSequence.length) continue;
+      const frame = safeSequence[index];
+      if (usedFrames.has(frame)) continue;
+      indexes.push(index);
+      usedFrames.add(frame);
+    }
+    if (indexes.length === count) return indexes;
+  }
 
   const indexes = [];
   const usedFrames = new Set();
@@ -1267,7 +1287,7 @@ async function buildHardwarePersonaFrames(persona, state, theme) {
   const meta = hardwarePersonaMeta(persona.spritesheetUrl, image);
   const cols = Math.max(1, Number(meta.cols) || PETDEX_DEFAULT_COLS);
   const sequence = petdexFrameSequenceForState(normalizedState, cols);
-  const sequenceIndexes = hardwarePersonaSequenceIndexes(sequence, HARDWARE_PERSONA_MAX_FRAMES);
+  const sequenceIndexes = hardwarePersonaSequenceIndexes(sequence, HARDWARE_PERSONA_MAX_FRAMES, normalizedState);
   const frames = [];
   for (const sequenceIndex of sequenceIndexes) {
     frames.push(await buildHardwarePersonaFrame(persona, normalizedState, theme, sequenceIndex));

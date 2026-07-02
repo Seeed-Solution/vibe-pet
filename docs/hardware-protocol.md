@@ -12,8 +12,8 @@ Hardware integrations should treat the protocol as display-only. Devices receive
 | State characteristic UUID | `7b71f91a-3c7b-4c3b-9f2d-2dbdccd5c002` |
 | Characteristic direction | Desktop writes, device receives |
 | Payload encoding | UTF-8 JSON |
-| Device name prefixes | `VibePet-Wio`, `VibePet-ESP-AI`, `VibePet-ESP-Display`, `VibePet-M5`, `VibePet-LILYGO`, `VibePet-Heltec`, `VibePet-WEMOS` |
-| Legacy prefixes | `CodePet-Wio`, `CodePet-ESP-AI`, `CodePet-ESP-Display`, `CodePet-M5`, `CodePet-LILYGO`, `CodePet-Heltec`, `CodePet-WEMOS` |
+| Device name prefixes | `VibePet-Wio`, `VibePet-ESP-AI`, `VibePet-ESP-Display`, `VibePet-SenseCAP`, `VibePet-M5`, `VibePet-LILYGO`, `VibePet-Heltec`, `VibePet-WEMOS` |
+| Legacy prefixes | `CodePet-Wio`, `CodePet-ESP-AI`, `CodePet-ESP-Display`, `CodePet-SenseCAP`, `CodePet-M5`, `CodePet-LILYGO`, `CodePet-Heltec`, `CodePet-WEMOS` |
 
 BLE devices advertise the service UUID and use one writable characteristic. The desktop app writes a single compact JSON packet whenever the active pet state changes or needs to be resent.
 
