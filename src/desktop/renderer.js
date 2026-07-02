@@ -67,6 +67,12 @@ const PETDEX_FRAME_SEQUENCE_BY_STATE = {
   attention: [0, 1, 2, 3, 2, 1],
   sweeping: [0, 1, 2, 1],
 };
+const HARDWARE_PERSONA_SEQUENCE_INDEXES_BY_STATE = {
+  working: [0, 2],
+  typing: [0, 2],
+  building: [0, 2],
+  juggling: [0, 2],
+};
 const HARDWARE_PERSONA_STATES = ["idle", "notification", "working", "error", "thinking", "attention"];
 const VIEW_STATE_PRIORITY = {
   error: 100,
@@ -394,6 +400,18 @@ function bluetoothDeviceCacheKey(nextDevice) {
   return id || name ? `${id}|${name}` : "";
 }
 
+function bluetoothDeviceName() {
+  return connectedBluetoothDeviceName || (device && typeof device.name === "string" ? device.name : "");
+}
+
+function isWioBluetoothDevice() {
+  return /^(VibePet|CodePet)-Wio/.test(bluetoothDeviceName());
+}
+
+function hardwarePersonaSyncMode() {
+  return isWioBluetoothDevice() ? "current-state" : "all-states";
+}
+
 function resetHardwarePersonaTransferState(options = {}) {
   if (options.forgetCache) {
     lastHardwarePersonaImageKey = "";
@@ -585,6 +603,24 @@ function petdexStateForHardware(state) {
   const raw = String(state || "idle").trim();
   if (raw === "permission" || raw === "codex-permission") return "notification";
   return PETDEX_ROW_BY_STATE[raw] === undefined ? "idle" : raw;
+}
+
+function hardwarePersonaVisualState(state) {
+  const normalized = petdexStateForHardware(state);
+  if (normalized === "sleeping") return "idle";
+  if (normalized === "typing" || normalized === "building" || normalized === "juggling") return "working";
+  if (normalized === "sweeping") return "thinking";
+  return normalized;
+}
+
+function hardwarePersonaSyncScope(packet) {
+  if (hardwarePersonaSyncMode() !== "current-state") return "all-states-v1";
+  return `state:${hardwarePersonaVisualState(packet && packet.s)}`;
+}
+
+function hardwarePersonaTransferStates(packet) {
+  if (hardwarePersonaSyncMode() !== "current-state") return HARDWARE_PERSONA_STATES;
+  return [hardwarePersonaVisualState(packet && packet.s)];
 }
 
 function formatStarCount(value) {
@@ -1005,10 +1041,24 @@ function petdexFrameSequenceForState(state, cols) {
   return frames.length ? frames : [0];
 }
 
-function hardwarePersonaSequenceIndexes(sequence, maxFrames) {
+function hardwarePersonaSequenceIndexes(sequence, maxFrames, state = "") {
   const safeSequence = Array.isArray(sequence) && sequence.length ? sequence : [0];
   const count = Math.max(1, Math.min(maxFrames, safeSequence.length));
   if (count === 1) return [0];
+
+  const preferred = HARDWARE_PERSONA_SEQUENCE_INDEXES_BY_STATE[petdexStateForHardware(state)];
+  if (preferred) {
+    const usedFrames = new Set();
+    const indexes = [];
+    for (const index of preferred) {
+      if (indexes.length >= count || index < 0 || index >= safeSequence.length) continue;
+      const frame = safeSequence[index];
+      if (usedFrames.has(frame)) continue;
+      indexes.push(index);
+      usedFrames.add(frame);
+    }
+    if (indexes.length === count) return indexes;
+  }
 
   const indexes = [];
   const usedFrames = new Set();
@@ -1237,7 +1287,7 @@ async function buildHardwarePersonaFrames(persona, state, theme) {
   const meta = hardwarePersonaMeta(persona.spritesheetUrl, image);
   const cols = Math.max(1, Number(meta.cols) || PETDEX_DEFAULT_COLS);
   const sequence = petdexFrameSequenceForState(normalizedState, cols);
-  const sequenceIndexes = hardwarePersonaSequenceIndexes(sequence, HARDWARE_PERSONA_MAX_FRAMES);
+  const sequenceIndexes = hardwarePersonaSequenceIndexes(sequence, HARDWARE_PERSONA_MAX_FRAMES, normalizedState);
   const frames = [];
   for (const sequenceIndex of sequenceIndexes) {
     frames.push(await buildHardwarePersonaFrame(persona, normalizedState, theme, sequenceIndex));
@@ -1245,9 +1295,9 @@ async function buildHardwarePersonaFrames(persona, state, theme) {
   return frames;
 }
 
-async function buildHardwarePersonaFrameBundle(persona, theme) {
+async function buildHardwarePersonaFrameBundle(persona, theme, states = HARDWARE_PERSONA_STATES) {
   const entries = [];
-  for (const state of HARDWARE_PERSONA_STATES) {
+  for (const state of states) {
     entries.push({
       state,
       frames: await buildHardwarePersonaFrames(persona, state, theme),
@@ -2595,6 +2645,7 @@ function hardwarePersonaLoadingSignature(hardwarePet, packet) {
     persona.slug || "",
     persona.spritesheetUrl || "",
     hardwarePersonaTransferTheme(packet),
+    hardwarePersonaSyncScope(packet),
   ].join("|");
 }
 
@@ -2606,7 +2657,7 @@ function hardwarePersonaTransferSignature(hardwarePet, packet) {
     persona.slug || "",
     persona.spritesheetUrl || "",
     hardwarePersonaTransferTheme(packet),
-    "all-states-v1",
+    hardwarePersonaSyncScope(packet),
   ].join("|");
 }
 
@@ -2650,9 +2701,10 @@ async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, sig
   activeHardwarePersonaTransferSignature = signature || "";
 
   const theme = hardwarePersonaTransferTheme(packet);
+  const states = hardwarePersonaTransferStates(packet);
   let bundle;
   try {
-    bundle = await buildHardwarePersonaFrameBundle(persona, theme);
+    bundle = await buildHardwarePersonaFrameBundle(persona, theme, states);
   } catch (err) {
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
     throw err;

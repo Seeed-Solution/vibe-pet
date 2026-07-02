@@ -133,7 +133,7 @@ built on macOS.
 
 The desktop app does not run PlatformIO when users flash firmware. For app
 flashing, put a flashable `main.bin` in the matching hardware folder, for
-example `src/firmware/m5stack-cores3-code-pet/main.bin`. ESP targets are flashed
+example `src/firmware/esp-ai-mini-ext-tft-code-pet/main.bin`. ESP targets are flashed
 with the bundled JavaScript esptool path. Non-ESP targets such as Wio Terminal
 use Arduino CLI when available.
 
@@ -146,7 +146,6 @@ display profiles still live in `src/firmware/esp-display-code-pet`:
 ```bash
 pio run -d src/firmware/esp-ai-mini-ext-tft-code-pet -t upload
 pio run -d src/firmware/esp-ai-v3-tft-code-pet -t upload
-pio run -d src/firmware/m5stack-cores3-code-pet -t upload
 pio run -d src/firmware/esp-display-code-pet -e lilygo_t_display_s3 -t upload
 ```
 

@@ -54,6 +54,7 @@ const CLAUDE_EVENTS = [
   "UserPromptSubmit",
   "PreToolUse",
   "PostToolUse",
+  "PostToolBatch",
   "PostToolUseFailure",
   "Stop",
   "StopFailure",

@@ -9,17 +9,35 @@
 #if defined(CODE_PET_USE_BACKLIGHT_CONTROL)
 #include "backlight_control.h"
 #endif
+#elif defined(CODE_PET_DISPLAY_ARDUINO_GFX)
+#include <Arduino_GFX_Library.h>
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR)
+#include "Indicator_Extender.h"
+#include "Indicator_SWSPI.h"
+#include "Indicator_RGB_Display.h"
+#endif
 #elif defined(CODE_PET_DISPLAY_OLED)
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #endif
 
+#if defined(CODE_PET_DISPLAY_TFT_ESPI) || defined(CODE_PET_DISPLAY_ARDUINO_GFX)
+#define CODE_PET_DISPLAY_COLOR_GFX
+#endif
+
+#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_COLOR_GFX)
+#define CODE_PET_USE_COLOR_LVGL
+#endif
+
 #if defined(CODE_PET_STATUS_PIXEL)
 #include <Adafruit_NeoPixel.h>
 #endif
 
-#if defined(CODE_PET_HAS_BLE)
+#if defined(CODE_PET_HAS_RPC_BLE)
+#include <rpcBLEDevice.h>
+#include <BLEServer.h>
+#elif defined(CODE_PET_HAS_BLE)
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -35,15 +53,21 @@
 #endif
 #endif
 
-#if defined(ESP32) && defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(ESP32) && defined(CODE_PET_USE_COLOR_LVGL)
+#include <esp_heap_caps.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #endif
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
 #include <lvgl.h>
+#if defined(CODE_PET_DISPLAY_TFT_ESPI)
 class TFT_eSPI;
 extern TFT_eSPI tft;
+#elif defined(CODE_PET_DISPLAY_ARDUINO_GFX)
+class Arduino_GFX;
+extern Arduino_GFX *gfx;
+#endif
 #endif
 
 #ifndef CODE_PET_DEVICE_NAME
@@ -77,6 +101,12 @@ extern TFT_eSPI tft;
 #endif
 #ifndef TFT_BACKLIGHT_ON
 #define TFT_BACKLIGHT_ON HIGH
+#endif
+#ifndef CODE_PET_ANIMATION_FRAME_MS
+#define CODE_PET_ANIMATION_FRAME_MS 240
+#endif
+#ifndef CODE_PET_ARDUINO_GFX_AUTO_FLUSH
+#define CODE_PET_ARDUINO_GFX_AUTO_FLUSH 1
 #endif
 
 #define CODE_PET_DISCONNECTED_LABEL "Disconnected"
@@ -124,11 +154,54 @@ uint8_t frameIndex = 0;
 unsigned long lastFrameAt = 0;
 unsigned long lastPollAt = 0;
 unsigned long lastWifiAttemptAt = 0;
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+bool localTestActive = false;
+#endif
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+static void markDirty();
+static bool displayConnected() {
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+  return bleConnected || localTestActive;
+#else
+  return bleConnected;
+#endif
+}
+
+#if defined(CODE_PET_USE_COLOR_LVGL) || (defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI))
+#ifndef CODE_PET_DYNAMIC_PERSONA_WIDTH
+#define CODE_PET_DYNAMIC_PERSONA_WIDTH 144
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_HEIGHT
+#define CODE_PET_DYNAMIC_PERSONA_HEIGHT 156
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES
+#define CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES 2
+#endif
+#ifndef CODE_PET_DYNAMIC_PERSONA_STATE_COUNT
+#define CODE_PET_DYNAMIC_PERSONA_STATE_COUNT 6
+#endif
+#define CODE_PET_DYNAMIC_PERSONA_BYTES (CODE_PET_DYNAMIC_PERSONA_WIDTH * CODE_PET_DYNAMIC_PERSONA_HEIGHT * 2)
+#endif
+
+#if defined(CODE_PET_USE_COLOR_LVGL)
+#ifndef CP_TFT_WIDTH
+#define CP_TFT_WIDTH 320
+#endif
+#ifndef CODE_PET_LVGL_BUFFER_ROWS
+#define CODE_PET_LVGL_BUFFER_ROWS 20
+#endif
+#ifndef CODE_PET_LVGL_IMAGE_BASE_ZOOM
+#define CODE_PET_LVGL_IMAGE_BASE_ZOOM 256
+#endif
+#ifndef CODE_PET_LVGL_PRESCALE_IMAGE
+#define CODE_PET_LVGL_PRESCALE_IMAGE 0
+#endif
+#define CODE_PET_LVGL_PRESCALED_WIDTH ((CODE_PET_DYNAMIC_PERSONA_WIDTH * CODE_PET_LVGL_IMAGE_BASE_ZOOM) / 256)
+#define CODE_PET_LVGL_PRESCALED_HEIGHT ((CODE_PET_DYNAMIC_PERSONA_HEIGHT * CODE_PET_LVGL_IMAGE_BASE_ZOOM) / 256)
+#define CODE_PET_LVGL_PRESCALED_BYTES (CODE_PET_LVGL_PRESCALED_WIDTH * CODE_PET_LVGL_PRESCALED_HEIGHT * 2)
 static lv_disp_draw_buf_t lvDrawBuffer;
-static lv_color_t lvBufferA[320 * 20];
-static lv_color_t lvBufferB[320 * 20];
+static lv_color_t lvBufferA[CP_TFT_WIDTH * CODE_PET_LVGL_BUFFER_ROWS];
+static lv_color_t lvBufferB[CP_TFT_WIDTH * CODE_PET_LVGL_BUFFER_ROWS];
 static lv_disp_drv_t lvDisplayDriver;
 static lv_obj_t *lvRoot = nullptr;
 static lv_obj_t *lvHeader = nullptr;
@@ -138,7 +211,11 @@ static lv_obj_t *lvStatusShadow = nullptr;
 static lv_obj_t *lvFooterClip = nullptr;
 static lv_obj_t *lvFooter = nullptr;
 static lv_obj_t *lvFooterShadow = nullptr;
-static lv_obj_t *lvImage = nullptr;
+static lv_obj_t *lvImages[2] = {nullptr, nullptr};
+static uint8_t lvImageFrontSlot = 0;
+static const lv_img_dsc_t *lvImageSources[2] = {nullptr, nullptr};
+static uint16_t lvImageSourceVersions[2] = {0, 0};
+static bool lvImageSourcePrescaled[2] = {false, false};
 static lv_obj_t *lvFallback = nullptr;
 static lv_obj_t *lvFallbackAgent = nullptr;
 static lv_obj_t *lvFallbackState = nullptr;
@@ -153,20 +230,49 @@ static lv_obj_t *lvLoadFill = nullptr;
 static uint32_t lvLastTickAt = 0;
 static String lvFooterTickerText = "";
 static bool lvFooterTickerDone = false;
+static bool lvFooterDisconnectedMode = false;
+static bool lvStyleCacheValid = false;
+static uint16_t lvStyleBg = 0;
+static uint16_t lvStylePanel = 0;
+static uint16_t lvStyleInk = 0;
+static uint16_t lvStyleMuted = 0;
+static uint16_t lvStyleAccent = 0;
+static uint16_t lvStyleLabelInk = 0;
+static uint16_t lvStyleLabelMuted = 0;
+static uint16_t lvStyleLoadPanelBg = 0;
+static uint16_t lvStyleLoadTrackBg = 0;
+static String lvHeaderTextCache = "";
+static String lvStatusTextCache = "";
+static String lvLoadTitleTextCache = "";
+static String lvLoadPercentTextCache = "";
+static String lvFallbackPersonaTextCache = "";
+static String lvFallbackStateTextCache = "";
+static String lvFallbackAgentTextCache = "";
 
-#ifndef CODE_PET_DYNAMIC_PERSONA_WIDTH
-#define CODE_PET_DYNAMIC_PERSONA_WIDTH 144
+#if CODE_PET_LVGL_PRESCALE_IMAGE && defined(ESP32)
+static uint8_t *lvPrescaledPixels[2] = {nullptr, nullptr};
+static bool lvPrescaleReady = false;
+static lv_img_dsc_t lvPrescaledImages[2] = {
+  {
+    .header = {
+      .cf = LV_IMG_CF_TRUE_COLOR,
+      .w = CODE_PET_LVGL_PRESCALED_WIDTH,
+      .h = CODE_PET_LVGL_PRESCALED_HEIGHT,
+    },
+    .data_size = CODE_PET_LVGL_PRESCALED_BYTES,
+    .data = nullptr,
+  },
+  {
+    .header = {
+      .cf = LV_IMG_CF_TRUE_COLOR,
+      .w = CODE_PET_LVGL_PRESCALED_WIDTH,
+      .h = CODE_PET_LVGL_PRESCALED_HEIGHT,
+    },
+    .data_size = CODE_PET_LVGL_PRESCALED_BYTES,
+    .data = nullptr,
+  },
+};
 #endif
-#ifndef CODE_PET_DYNAMIC_PERSONA_HEIGHT
-#define CODE_PET_DYNAMIC_PERSONA_HEIGHT 156
-#endif
-#ifndef CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES
-#define CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES 2
-#endif
-#ifndef CODE_PET_DYNAMIC_PERSONA_STATE_COUNT
-#define CODE_PET_DYNAMIC_PERSONA_STATE_COUNT 6
-#endif
-#define CODE_PET_DYNAMIC_PERSONA_BYTES (CODE_PET_DYNAMIC_PERSONA_WIDTH * CODE_PET_DYNAMIC_PERSONA_HEIGHT * 2)
 
 enum DynamicPersonaFormat : uint8_t {
   DYNAMIC_PERSONA_RAW_RGB565,
@@ -195,6 +301,7 @@ static lv_img_dsc_t dynamicPersonaImages[CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES] = 
     .data = dynamicPersonaPixels[1],
   },
 };
+static uint16_t dynamicPersonaImageVersions[CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES] = {0};
 static String dynamicPersonaId = "";
 static String dynamicPersonaSlug = "";
 static String dynamicPersonaState = "idle";
@@ -353,7 +460,7 @@ static bool isNightTheme() {
   return pet.theme == "night" || pet.theme == "dark";
 }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
 extern const lv_img_dsc_t *codePetPersonaFrame(const String &slug, const String &state, uint8_t frameIndex);
 extern bool codePetPersonaAvailable(const String &slug);
 
@@ -405,6 +512,84 @@ static void setPremiumLabelText(lv_obj_t *label, lv_obj_t *shadow, const char *t
   if (label) lv_label_set_text(label, text);
 }
 
+static void setPremiumLabelTextIfChanged(lv_obj_t *label, lv_obj_t *shadow, String &cache, const String &text) {
+  if (cache == text) return;
+  cache = text;
+  setPremiumLabelText(label, shadow, text.c_str());
+}
+
+static void setLabelTextIfChanged(lv_obj_t *label, String &cache, const String &text) {
+  if (cache == text) return;
+  cache = text;
+  if (label) lv_label_set_text(label, text.c_str());
+}
+
+static void setLvHidden(lv_obj_t *obj, bool hidden) {
+  if (!obj) return;
+  const bool isHidden = lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  if (hidden == isHidden) return;
+  if (hidden) {
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uint16_t muted,
+                                  uint16_t accent, uint16_t labelInk, uint16_t labelMuted,
+                                  uint16_t loadPanelBg, uint16_t loadTrackBg) {
+  const bool first = !lvStyleCacheValid;
+  if (first || lvStyleBg != bg) {
+    lv_obj_set_style_bg_color(lv_scr_act(), lvColor(bg), 0);
+    lv_obj_set_style_bg_color(lvRoot, lvColor(bg), 0);
+    lvStyleBg = bg;
+  }
+  if (first || lvStyleLabelInk != labelInk) {
+    stylePremiumLabel(lvHeader, labelInk);
+    stylePremiumShadow(lvHeaderShadow, labelInk, LV_OPA_40);
+    stylePremiumLabel(lvLoadTitle, labelInk);
+    stylePremiumShadow(lvLoadTitleShadow, labelInk, LV_OPA_50);
+    lvStyleLabelInk = labelInk;
+  }
+  if (first || lvStyleAccent != accent) {
+    stylePremiumLabel(lvStatus, accent);
+    stylePremiumShadow(lvStatusShadow, accent, LV_OPA_40);
+    stylePremiumLabel(lvLoadPercent, accent);
+    stylePremiumShadow(lvLoadPercentShadow, accent, LV_OPA_50);
+    lv_obj_set_style_border_color(lvLoadPanel, lvColor(accent), 0);
+    lv_obj_set_style_bg_color(lvLoadFill, lvColor(accent), 0);
+    lv_obj_set_style_text_color(lvFallbackState, lvColor(accent), 0);
+    lvStyleAccent = accent;
+  }
+  if (first || lvStyleLabelMuted != labelMuted) {
+    stylePremiumLabel(lvFooter, labelMuted);
+    stylePremiumShadow(lvFooterShadow, labelMuted, LV_OPA_40);
+    lvStyleLabelMuted = labelMuted;
+  }
+  if (first || lvStyleLoadPanelBg != loadPanelBg) {
+    lv_obj_set_style_bg_color(lvLoadPanel, lvColor(loadPanelBg), 0);
+    lvStyleLoadPanelBg = loadPanelBg;
+  }
+  if (first || lvStyleLoadTrackBg != loadTrackBg) {
+    lv_obj_set_style_bg_color(lvLoadTrack, lvColor(loadTrackBg), 0);
+    lvStyleLoadTrackBg = loadTrackBg;
+  }
+  if (first || lvStylePanel != panel) {
+    lv_obj_set_style_bg_color(lvFallback, lvColor(panel), 0);
+    lvStylePanel = panel;
+  }
+  if (first || lvStyleInk != ink) {
+    lv_obj_set_style_border_color(lvFallback, lvColor(ink), 0);
+    lv_obj_set_style_text_color(lvFallbackPersona, lvColor(ink), 0);
+    lvStyleInk = ink;
+  }
+  if (first || lvStyleMuted != muted) {
+    lv_obj_set_style_text_color(lvFallbackAgent, lvColor(muted), 0);
+    lvStyleMuted = muted;
+  }
+  lvStyleCacheValid = true;
+}
+
 #if CODE_PET_LVGL_TFT_SWAP_RB
 static uint16_t swapRgb565RedBlue(uint16_t color) {
   return ((color & 0xF800) >> 11) | (color & 0x07E0) | ((color & 0x001F) << 11);
@@ -421,10 +606,21 @@ static void lvFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
     pixels[i] = swapRgb565RedBlue(pixels[i]);
   }
 #endif
+#if defined(CODE_PET_DISPLAY_TFT_ESPI)
   tft.startWrite();
   tft.setAddrWindow(area->x1, area->y1, width, height);
   tft.pushColors(pixels, count, CODE_PET_LVGL_TFT_SWAP_BYTES);
   tft.endWrite();
+#elif defined(CODE_PET_DISPLAY_ARDUINO_GFX)
+#if CODE_PET_LVGL_TFT_SWAP_BYTES
+  gfx->draw16bitBeRGBBitmap(area->x1, area->y1, pixels, width, height);
+#else
+  gfx->draw16bitRGBBitmap(area->x1, area->y1, pixels, width, height);
+#endif
+#if !CODE_PET_ARDUINO_GFX_AUTO_FLUSH
+  gfx->flush();
+#endif
+#endif
   lv_disp_flush_ready(disp);
 }
 
@@ -498,6 +694,80 @@ static void drawText(const String &text, int16_t x, int16_t y, uint8_t size, uin
   tft.setCursor(x, y);
   tft.print(text);
 }
+#elif defined(CODE_PET_DISPLAY_ARDUINO_GFX)
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR)
+static Arduino_DataBus *gfxBus = new Indicator_SWSPI(
+  GFX_NOT_DEFINED,
+  EXPANDER_IO_LCD_CS,
+  SPI_SCLK,
+  SPI_MOSI,
+  GFX_NOT_DEFINED
+);
+static Arduino_ESP32RGBPanel *gfxRgbPanel = new Arduino_ESP32RGBPanel(
+  18, 17, 16, 21,
+  4, 3, 2, 1, 0,
+  10, 9, 8, 7, 6, 5,
+  15, 14, 13, 12, 11,
+  1, 10, 8, 50,
+  1, 10, 8, 20
+);
+Arduino_GFX *gfx = new Arduino_RGB_Display(
+  CP_TFT_WIDTH,
+  CP_TFT_HEIGHT,
+  gfxRgbPanel,
+  CP_TFT_ROTATION,
+  CODE_PET_ARDUINO_GFX_AUTO_FLUSH != 0,
+  gfxBus,
+  GFX_NOT_DEFINED,
+  st7701_indicator_init_operations,
+  sizeof(st7701_indicator_init_operations)
+);
+#endif
+
+#ifndef CODE_PET_ARDUINO_GFX_SPEED
+#define CODE_PET_ARDUINO_GFX_SPEED 12000000L
+#endif
+
+static int16_t screenW() { return gfx->width(); }
+static int16_t screenH() { return gfx->height(); }
+static void displayBegin() {
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR)
+  extender_init();
+#endif
+  gfx->begin(CODE_PET_ARDUINO_GFX_SPEED);
+  gfx->setRotation(CP_TFT_ROTATION);
+#if defined(CODE_PET_USE_COLOR_LVGL)
+  lv_init();
+  lv_disp_draw_buf_init(&lvDrawBuffer, lvBufferA, lvBufferB, sizeof(lvBufferA) / sizeof(lvBufferA[0]));
+  lv_disp_drv_init(&lvDisplayDriver);
+  lvDisplayDriver.hor_res = screenW();
+  lvDisplayDriver.ver_res = screenH();
+  lvDisplayDriver.flush_cb = lvFlush;
+  lvDisplayDriver.draw_buf = &lvDrawBuffer;
+  lv_disp_drv_register(&lvDisplayDriver);
+  lvLastTickAt = millis();
+#endif
+#if defined(GFX_BL) && GFX_BL >= 0
+  pinMode(GFX_BL, OUTPUT);
+  digitalWrite(GFX_BL, HIGH);
+#elif defined(TFT_BL) && TFT_BL >= 0
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
+#endif
+}
+static void fillScreen(uint16_t c) { gfx->fillScreen(c); }
+static void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) { gfx->fillRect(x, y, w, h, c); }
+static void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) { gfx->drawRect(x, y, w, h, c); }
+static void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t c) { gfx->fillRoundRect(x, y, w, h, r, c); }
+static void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t c) { gfx->drawRoundRect(x, y, w, h, r, c); }
+static void fillCircle(int16_t x, int16_t y, int16_t r, uint16_t c) { gfx->fillCircle(x, y, r, c); }
+static void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t c) { gfx->drawLine(x0, y0, x1, y1, c); }
+static void drawText(const String &text, int16_t x, int16_t y, uint8_t size, uint16_t color, uint16_t bg) {
+  gfx->setTextSize(size);
+  gfx->setTextColor(color, bg);
+  gfx->setCursor(x, y);
+  gfx->print(text);
+}
 #elif defined(CODE_PET_DISPLAY_OLED)
 Adafruit_SSD1306 display(CP_OLED_WIDTH, CP_OLED_HEIGHT, &Wire, CP_OLED_RST);
 static int16_t screenW() { return display.width(); }
@@ -533,6 +803,10 @@ static void drawText(const String &text, int16_t x, int16_t y, uint8_t size, uin
 static void displayFlush() {
 #if defined(CODE_PET_DISPLAY_OLED)
   display.display();
+#elif defined(CODE_PET_DISPLAY_ARDUINO_GFX)
+#if !CODE_PET_ARDUINO_GFX_AUTO_FLUSH
+  gfx->flush();
+#endif
 #endif
 }
 
@@ -541,7 +815,7 @@ static void updateStatusPixel() {
   uint8_t r, g, b;
   stateRgb(pet.state, r, g, b);
   uint8_t brightness = CP_STATUS_PIXEL_BRIGHTNESS;
-  if (!bleConnected) {
+  if (!displayConnected()) {
     brightness = (frameIndex % 2) ? 20 : 4;
   } else if (pet.state == "notification" || pet.state == "permission" || pet.state == "error") {
     brightness = (frameIndex % 2) ? 96 : 8;
@@ -636,7 +910,7 @@ static String normalizePacketState(const String &state) {
   return "idle";
 }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
 static String dynamicPersonaVisualState(const String &state) {
   String clean = normalizePacketState(state);
   if (clean == "sleeping") return "idle";
@@ -656,6 +930,9 @@ static int8_t dynamicPersonaStateIndex(const String &state) {
 
 static int petBob() {
   if (pet.state == "sleeping") return 1;
+  if (pet.state == "working" || pet.state == "typing" || pet.state == "building") {
+    return (frameIndex % 4 == 1 || frameIndex % 4 == 2) ? -1 : 0;
+  }
   if (pet.state == "thinking") {
     switch (frameIndex % 4) {
       case 0: return -4;
@@ -664,13 +941,19 @@ static int petBob() {
       default: return -1;
     }
   }
-  if (pet.state == "working" || pet.state == "typing" || pet.state == "building") return (frameIndex % 2) ? -3 : 0;
   if (pet.state == "juggling") return (frameIndex % 4) - 2;
   return (frameIndex % 2) ? -1 : 0;
 }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
 static int petImageShiftX() {
+  if (pet.state == "working" || pet.state == "typing" || pet.state == "building") {
+    switch (frameIndex % 4) {
+      case 1: return 2;
+      case 3: return -2;
+      default: return 0;
+    }
+  }
   if (pet.state == "thinking") {
     switch (frameIndex % 4) {
       case 0: return -2;
@@ -697,13 +980,117 @@ static int16_t petImageAngle() {
 }
 
 static uint16_t petImageZoom() {
-  if (pet.state == "working" || pet.state == "typing" || pet.state == "building") {
-    return (frameIndex % 2) ? 262 : 256;
-  }
+  const uint32_t baseZoom = CODE_PET_LVGL_IMAGE_BASE_ZOOM;
   if (pet.state == "attention" || pet.state == "notification" || pet.state == "error") {
-    return (frameIndex % 2) ? 266 : 256;
+    return static_cast<uint16_t>((baseZoom * ((frameIndex % 2) ? 266U : 256U)) / 256U);
   }
-  return 256;
+  return static_cast<uint16_t>(baseZoom);
+}
+
+static uint16_t dynamicPersonaImageVersionFor(const lv_img_dsc_t *frame) {
+  for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES; i++) {
+    if (frame == &dynamicPersonaImages[i]) return dynamicPersonaImageVersions[i];
+  }
+  return 0;
+}
+
+#if CODE_PET_LVGL_PRESCALE_IMAGE && defined(ESP32)
+static bool ensureLvPrescaleBuffers() {
+  if (lvPrescaleReady) return true;
+  if (CODE_PET_LVGL_IMAGE_BASE_ZOOM == 256) return false;
+  for (uint8_t i = 0; i < 2; i++) {
+    if (!lvPrescaledPixels[i]) {
+      lvPrescaledPixels[i] = static_cast<uint8_t *>(heap_caps_malloc(CODE_PET_LVGL_PRESCALED_BYTES,
+                                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      if (!lvPrescaledPixels[i]) return false;
+      lvPrescaledImages[i].data = lvPrescaledPixels[i];
+    }
+  }
+  lvPrescaleReady = true;
+  return true;
+}
+
+static bool prepareLvPrescaledImage(uint8_t slot, const lv_img_dsc_t *frame) {
+  if (slot >= 2 || !frame || !frame->data || !ensureLvPrescaleBuffers()) return false;
+  if (frame->header.w != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
+      frame->header.h != CODE_PET_DYNAMIC_PERSONA_HEIGHT) {
+    return false;
+  }
+
+  const uint16_t *src = reinterpret_cast<const uint16_t *>(frame->data);
+  uint16_t *dst = reinterpret_cast<uint16_t *>(lvPrescaledPixels[slot]);
+  for (uint16_t y = 0; y < CODE_PET_LVGL_PRESCALED_HEIGHT; y++) {
+    const uint16_t sy = (static_cast<uint32_t>(y) * CODE_PET_DYNAMIC_PERSONA_HEIGHT) / CODE_PET_LVGL_PRESCALED_HEIGHT;
+    const uint16_t *srcRow = src + static_cast<uint32_t>(sy) * CODE_PET_DYNAMIC_PERSONA_WIDTH;
+    uint16_t *dstRow = dst + static_cast<uint32_t>(y) * CODE_PET_LVGL_PRESCALED_WIDTH;
+    for (uint16_t x = 0; x < CODE_PET_LVGL_PRESCALED_WIDTH; x++) {
+      const uint16_t sx = (static_cast<uint32_t>(x) * CODE_PET_DYNAMIC_PERSONA_WIDTH) / CODE_PET_LVGL_PRESCALED_WIDTH;
+      dstRow[x] = srcRow[sx];
+    }
+  }
+  lv_img_cache_invalidate_src(&lvPrescaledImages[slot]);
+  return true;
+}
+#endif
+
+static void hideLvPersonaImages() {
+  for (uint8_t i = 0; i < 2; i++) {
+    setLvHidden(lvImages[i], true);
+  }
+}
+
+static void setLvPersonaImagePose(lv_obj_t *image, bool connected, bool frameUsesCurrentPersona, bool prescaled) {
+  if (!image) return;
+  const uint16_t imageWidth = prescaled ? CODE_PET_LVGL_PRESCALED_WIDTH : CODE_PET_DYNAMIC_PERSONA_WIDTH;
+  const uint16_t imageHeight = prescaled ? CODE_PET_LVGL_PRESCALED_HEIGHT : CODE_PET_DYNAMIC_PERSONA_HEIGHT;
+  lv_img_set_pivot(image, imageWidth / 2, imageHeight / 2);
+  lv_img_set_angle(image, prescaled ? 0 : (connected && frameUsesCurrentPersona ? petImageAngle() : 0));
+  lv_img_set_zoom(image, prescaled ? 256 : (connected ? petImageZoom() : CODE_PET_LVGL_IMAGE_BASE_ZOOM));
+  lv_obj_align(image, LV_ALIGN_CENTER,
+               connected && frameUsesCurrentPersona ? petImageShiftX() : 0,
+               connected ? petBob() : ((frameIndex % 2) ? -1 : 0));
+}
+
+static void showLvPersonaImage(const lv_img_dsc_t *frame, bool connected, bool frameUsesCurrentPersona) {
+  if (!frame || !lvImages[0] || !lvImages[1]) return;
+
+  const uint16_t version = dynamicPersonaImageVersionFor(frame);
+  const uint8_t frontSlot = lvImageFrontSlot;
+  lv_obj_t *frontImage = lvImages[frontSlot];
+  const bool frontVisible = frontImage && !lv_obj_has_flag(frontImage, LV_OBJ_FLAG_HIDDEN);
+  const bool sameFrame = frontVisible &&
+                         lvImageSources[frontSlot] == frame &&
+                         lvImageSourceVersions[frontSlot] == version;
+  const uint8_t targetSlot = sameFrame ? frontSlot : static_cast<uint8_t>(frontSlot ^ 1U);
+  lv_obj_t *targetImage = lvImages[targetSlot];
+
+  if (!sameFrame) {
+    const bool targetAlreadyHasFrame = lvImageSources[targetSlot] == frame &&
+                                       lvImageSourceVersions[targetSlot] == version;
+    const bool targetWasPrescaled = lvImageSourcePrescaled[targetSlot];
+    const lv_img_dsc_t *displayFrame = frame;
+    bool prescaled = false;
+#if CODE_PET_LVGL_PRESCALE_IMAGE && defined(ESP32)
+    if (targetAlreadyHasFrame && lvImageSourcePrescaled[targetSlot]) {
+      displayFrame = &lvPrescaledImages[targetSlot];
+      prescaled = true;
+    } else if (prepareLvPrescaledImage(targetSlot, frame)) {
+      displayFrame = &lvPrescaledImages[targetSlot];
+      prescaled = true;
+    }
+#endif
+    if (!targetAlreadyHasFrame || targetWasPrescaled != prescaled) lv_img_set_src(targetImage, displayFrame);
+    lvImageSources[targetSlot] = frame;
+    lvImageSourceVersions[targetSlot] = version;
+    lvImageSourcePrescaled[targetSlot] = prescaled;
+  }
+  setLvPersonaImagePose(targetImage, connected, frameUsesCurrentPersona, lvImageSourcePrescaled[targetSlot]);
+  setLvHidden(targetImage, false);
+
+  if (!sameFrame) {
+    setLvHidden(frontImage, true);
+    lvImageFrontSlot = targetSlot;
+  }
 }
 #endif
 
@@ -762,7 +1149,7 @@ static void renderPetFace(int16_t cx, int16_t cy, int16_t scale, uint16_t body, 
   }
 }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
 static void ensureLvglUi() {
   if (lvRoot) return;
   const int16_t sw = screenW();
@@ -785,8 +1172,11 @@ static void ensureLvglUi() {
   lv_obj_set_style_border_width(lvRoot, 0, 0);
   lv_obj_set_style_pad_all(lvRoot, 0, 0);
 
-  lvImage = lv_img_create(lvRoot);
-  lv_obj_align(lvImage, LV_ALIGN_CENTER, 0, 0);
+  for (uint8_t i = 0; i < 2; i++) {
+    lvImages[i] = lv_img_create(lvRoot);
+    lv_obj_align(lvImages[i], LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(lvImages[i], LV_OBJ_FLAG_HIDDEN);
+  }
 
   lvHeaderShadow = lv_label_create(lvRoot);
   lv_obj_set_width(lvHeaderShadow, headerWidth);
@@ -868,6 +1258,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_border_width(lvLoadPanel, 1, 0);
   lv_obj_set_style_pad_all(lvLoadPanel, 8, 0);
   lv_obj_set_style_shadow_width(lvLoadPanel, 0, 0);
+  lv_obj_set_style_bg_opa(lvLoadPanel, LV_OPA_COVER, 0);
   lv_obj_clear_flag(lvLoadPanel, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
 
@@ -903,6 +1294,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_radius(lvLoadTrack, 4, 0);
   lv_obj_set_style_border_width(lvLoadTrack, 0, 0);
   lv_obj_set_style_pad_all(lvLoadTrack, 0, 0);
+  lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, 0);
   lv_obj_clear_flag(lvLoadTrack, LV_OBJ_FLAG_SCROLLABLE);
 
   lvLoadFill = lv_obj_create(lvLoadTrack);
@@ -911,6 +1303,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_radius(lvLoadFill, 4, 0);
   lv_obj_set_style_border_width(lvLoadFill, 0, 0);
   lv_obj_set_style_pad_all(lvLoadFill, 0, 0);
+  lv_obj_set_style_bg_opa(lvLoadFill, LV_OPA_COVER, 0);
   lv_obj_clear_flag(lvLoadFill, LV_OBJ_FLAG_SCROLLABLE);
 }
 
@@ -937,17 +1330,19 @@ static void setFooterTickerX(void *obj, int32_t value) {
 static void finishFooterTicker(lv_anim_t *anim) {
   (void)anim;
   lvFooterTickerDone = true;
-  if (lvFooterClip) lv_obj_add_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+  setLvHidden(lvFooterClip, true);
 }
 
 static void updateFooterTicker(const String &text, bool connected) {
   if (!lvFooter || !lvFooterClip) return;
 
   if (!connected) {
+    if (lvFooterDisconnectedMode && lvFooterTickerText == CODE_PET_DISCONNECTED_LABEL) return;
     lv_anim_del(lvFooter, setFooterTickerX);
+    lvFooterDisconnectedMode = true;
     lvFooterTickerText = CODE_PET_DISCONNECTED_LABEL;
     lvFooterTickerDone = false;
-    lv_obj_clear_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+    setLvHidden(lvFooterClip, false);
     lv_obj_set_width(lvFooter, lv_obj_get_width(lvFooterClip));
     if (lvFooterShadow) lv_obj_set_width(lvFooterShadow, lv_obj_get_width(lvFooterClip));
     lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_DOT);
@@ -962,21 +1357,23 @@ static void updateFooterTicker(const String &text, bool connected) {
 
   if (!text.length()) {
     lv_anim_del(lvFooter, setFooterTickerX);
+    lvFooterDisconnectedMode = false;
     lvFooterTickerText = "";
     lvFooterTickerDone = true;
-    lv_obj_add_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+    setLvHidden(lvFooterClip, true);
     return;
   }
 
+  lvFooterDisconnectedMode = false;
   if (text == lvFooterTickerText) {
-    if (lvFooterTickerDone) lv_obj_add_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+    if (lvFooterTickerDone) setLvHidden(lvFooterClip, true);
     return;
   }
 
   lv_anim_del(lvFooter, setFooterTickerX);
   lvFooterTickerText = text;
   lvFooterTickerDone = false;
-  lv_obj_clear_flag(lvFooterClip, LV_OBJ_FLAG_HIDDEN);
+  setLvHidden(lvFooterClip, false);
   lv_obj_set_width(lvFooter, LV_SIZE_CONTENT);
   if (lvFooterShadow) lv_obj_set_width(lvFooterShadow, LV_SIZE_CONTENT);
   lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_CLIP);
@@ -1014,22 +1411,19 @@ static void updateFooterTicker(const String &text, bool connected) {
 
 static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, uint16_t ink, uint16_t muted, uint16_t accent) {
   ensureLvglUi();
-  const bool connected = bleConnected;
+  const bool connected = displayConnected();
   const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
   String renderSlug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
   String renderState = normalizePacketState(connected ? pet.state : String("idle"));
+  String renderVisualState = dynamicPersonaVisualState(renderState);
   const bool imageLoading = connected && dynamicPersonaReceiving && dynamicPersonaShowLoading &&
                             dynamicPersonaTransferSlug == renderSlug &&
-                            dynamicPersonaTransferState == normalizePacketState(renderState);
+                            dynamicPersonaTransferState == renderVisualState;
   const uint8_t imageProgress = imageLoading ? dynamicPersonaProgressPercent() : 0;
   const lv_img_dsc_t *frame = dynamicPersonaFrameForSlug(renderSlug, renderState);
   bool frameUsesCurrentPersona = frame != nullptr;
   if (!frame) {
     frame = codePetPersonaFrame(renderSlug, renderState, frameIndex);
-    frameUsesCurrentPersona = frame != nullptr;
-  }
-  if (!frame && dynamicPersonaReady && renderSlug == dynamicPersonaSlug) {
-    frame = dynamicPersonaFrameForSlugAnyState(renderSlug);
     frameUsesCurrentPersona = frame != nullptr;
   }
   if (!frame && connected) {
@@ -1047,82 +1441,364 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   const bool showFallbackPanel = frame == nullptr;
   if (showFallbackPanel && !connected && !pet.personaSlug.length()) return false;
 
-  lv_obj_set_style_bg_color(lv_scr_act(), lvColor(bg), 0);
-  lv_obj_set_style_bg_color(lvRoot, lvColor(bg), 0);
-  lv_obj_set_style_bg_opa(lvRoot, LV_OPA_COVER, 0);
-
   const bool night = isNightTheme();
   const uint16_t labelInk = night ? rgb565(255, 255, 255) : rgb565(30, 40, 54);
   const uint16_t labelMuted = night ? rgb565(232, 238, 248) : rgb565(38, 49, 66);
   const uint16_t loadPanelBg = night ? rgb565(8, 10, 14) : panel;
   const uint16_t loadTrackBg = night ? rgb565(36, 42, 54) : rgb565(224, 230, 238);
-  stylePremiumLabel(lvHeader, labelInk);
-  stylePremiumShadow(lvHeaderShadow, labelInk, LV_OPA_40);
-  stylePremiumLabel(lvStatus, accent);
-  stylePremiumShadow(lvStatusShadow, accent, LV_OPA_40);
-  stylePremiumLabel(lvFooter, labelMuted);
-  stylePremiumShadow(lvFooterShadow, labelMuted, LV_OPA_40);
-  lv_obj_set_style_bg_color(lvLoadPanel, lvColor(loadPanelBg), 0);
-  lv_obj_set_style_bg_opa(lvLoadPanel, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_color(lvLoadPanel, lvColor(accent), 0);
-  stylePremiumLabel(lvLoadTitle, labelInk);
-  stylePremiumShadow(lvLoadTitleShadow, labelInk, LV_OPA_50);
-  stylePremiumLabel(lvLoadPercent, accent);
-  stylePremiumShadow(lvLoadPercentShadow, accent, LV_OPA_50);
-  lv_obj_set_style_bg_color(lvLoadTrack, lvColor(loadTrackBg), 0);
-  lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(lvLoadFill, lvColor(accent), 0);
-  lv_obj_set_style_bg_opa(lvLoadFill, LV_OPA_COVER, 0);
+  updateLvPersonaStyles(bg, panel, ink, muted, accent, labelInk, labelMuted, loadPanelBg, loadTrackBg);
   String headerText = connected ? cleanText(pet.agent, 22) : "";
-  setPremiumLabelText(lvHeader, lvHeaderShadow, headerText.c_str());
+  setPremiumLabelTextIfChanged(lvHeader, lvHeaderShadow, lvHeaderTextCache, headerText);
   String statusText = connected ? cleanText(imageLoading ? String("Sync ") + String(imageProgress) + "%" : displayStateLabel(), 20) : "";
-  setPremiumLabelText(lvStatus, lvStatusShadow, statusText.c_str());
+  setPremiumLabelTextIfChanged(lvStatus, lvStatusShadow, lvStatusTextCache, statusText);
   String footer = connected ? cleanText(pet.output, CODE_PET_OUTPUT_MAX_CHARS) : String(CODE_PET_DISCONNECTED_LABEL);
   updateFooterTicker(footer, connected);
   if (imageLoading) {
     String progressText = String(imageProgress) + "%";
-    setPremiumLabelText(lvLoadTitle, lvLoadTitleShadow, "Syncing");
-    setPremiumLabelText(lvLoadPercent, lvLoadPercentShadow, progressText.c_str());
+    setPremiumLabelTextIfChanged(lvLoadTitle, lvLoadTitleShadow, lvLoadTitleTextCache, String("Syncing"));
+    setPremiumLabelTextIfChanged(lvLoadPercent, lvLoadPercentShadow, lvLoadPercentTextCache, progressText);
     const int16_t trackWidth = lv_obj_get_width(lvLoadTrack);
     int16_t fillWidth = (trackWidth * imageProgress) / 100;
     if (fillWidth < 1) fillWidth = 1;
-    lv_obj_set_width(lvLoadFill, fillWidth);
-    lv_obj_clear_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
+    if (lv_obj_get_width(lvLoadFill) != fillWidth) lv_obj_set_width(lvLoadFill, fillWidth);
+    setLvHidden(lvLoadPanel, false);
   } else {
-    lv_obj_add_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
+    setLvHidden(lvLoadPanel, true);
   }
 
-  lv_obj_set_style_bg_color(lvFallback, lvColor(panel), 0);
-  lv_obj_set_style_border_color(lvFallback, lvColor(ink), 0);
-  lv_obj_set_style_text_color(lvFallbackPersona, lvColor(ink), 0);
-  lv_obj_set_style_text_color(lvFallbackState, lvColor(accent), 0);
-  lv_obj_set_style_text_color(lvFallbackAgent, lvColor(muted), 0);
-  lv_label_set_text(lvFallbackPersona, connected ? cleanText(pet.personaName, 18).c_str() : CODE_PET_DISCONNECTED_LABEL);
+  String fallbackPersona = connected ? cleanText(pet.personaName, 18) : String(CODE_PET_DISCONNECTED_LABEL);
+  setLabelTextIfChanged(lvFallbackPersona, lvFallbackPersonaTextCache, fallbackPersona);
   String fallbackState = connected ? cleanText(displayStateLabel(), 20) : "";
-  lv_label_set_text(lvFallbackState, fallbackState.c_str());
-  lv_label_set_text(lvFallbackAgent, connected ? cleanText(pet.agent, 18).c_str() : "");
+  setLabelTextIfChanged(lvFallbackState, lvFallbackStateTextCache, fallbackState);
+  String fallbackAgent = connected ? cleanText(pet.agent, 18) : "";
+  setLabelTextIfChanged(lvFallbackAgent, lvFallbackAgentTextCache, fallbackAgent);
 
   if (showFallbackPanel) {
-    lv_obj_add_flag(lvImage, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(lvFallback, LV_OBJ_FLAG_HIDDEN);
+    hideLvPersonaImages();
+    setLvHidden(lvFallback, false);
   } else {
-    lv_img_set_src(lvImage, frame);
-    lv_img_set_pivot(lvImage, CODE_PET_DYNAMIC_PERSONA_WIDTH / 2, CODE_PET_DYNAMIC_PERSONA_HEIGHT / 2);
-    lv_img_set_angle(lvImage, connected && frameUsesCurrentPersona ? petImageAngle() : 0);
-    lv_img_set_zoom(lvImage, connected && frameUsesCurrentPersona ? petImageZoom() : 256);
-    lv_obj_align(lvImage, LV_ALIGN_CENTER,
-                 connected && frameUsesCurrentPersona ? petImageShiftX() : 0,
-                 connected ? petBob() : ((frameIndex % 2) ? -1 : 0));
-    lv_obj_clear_flag(lvImage, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(lvFallback, LV_OBJ_FLAG_HIDDEN);
+    showLvPersonaImage(frame, connected, frameUsesCurrentPersona);
+    setLvHidden(lvFallback, true);
   }
-  lv_obj_move_foreground(lvHeaderShadow);
-  lv_obj_move_foreground(lvHeader);
-  lv_obj_move_foreground(lvStatusShadow);
-  lv_obj_move_foreground(lvStatus);
-  lv_obj_move_foreground(lvFooterClip);
-  if (imageLoading) lv_obj_move_foreground(lvLoadPanel);
   return true;
+}
+#endif
+
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+enum SimpleDynamicPersonaFormat : uint8_t {
+  SIMPLE_DYNAMIC_PERSONA_RAW_RGB565,
+  SIMPLE_DYNAMIC_PERSONA_RLE_RGB565,
+};
+
+static uint8_t simpleDynamicPersonaPixels[CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES][CODE_PET_DYNAMIC_PERSONA_BYTES];
+static String simpleDynamicPersonaId = "";
+static String simpleDynamicPersonaSlug = "";
+static String simpleDynamicPersonaState = "idle";
+static String simpleDynamicPersonaTransferSlug = "";
+static String simpleDynamicPersonaTransferState = "idle";
+static bool simpleDynamicPersonaReady = false;
+static bool simpleDynamicPersonaReceiving = false;
+static bool simpleDynamicPersonaShowLoading = true;
+static SimpleDynamicPersonaFormat simpleDynamicPersonaFormat = SIMPLE_DYNAMIC_PERSONA_RAW_RGB565;
+static uint16_t simpleDynamicPersonaExpectedSeq = 0;
+static uint32_t simpleDynamicPersonaReceived = 0;
+static uint8_t simpleDynamicPersonaFrameCount = 1;
+static uint8_t simpleDynamicPersonaTransferFrameCount = 1;
+static uint8_t simpleDynamicPersonaTransferFrameIndex = 0;
+static uint8_t simpleDynamicPersonaReceivedFrameMask = 0;
+static uint8_t simpleDynamicPersonaLastProgressPercent = 0;
+static uint8_t simpleDynamicPersonaRleTriple[3] = {0, 0, 0};
+static uint8_t simpleDynamicPersonaRleIndex = 0;
+static const char *SIMPLE_DYNAMIC_PERSONA_STATE_NAMES[CODE_PET_DYNAMIC_PERSONA_STATE_COUNT] = {
+  "idle", "notification", "working", "error", "thinking", "attention"
+};
+
+static String simpleDynamicPersonaVisualState(const String &state) {
+  String clean = normalizePacketState(state);
+  if (clean == "sleeping") return "idle";
+  if (clean == "typing" || clean == "building" || clean == "juggling") return "working";
+  if (clean == "sweeping") return "thinking";
+  return clean;
+}
+
+static int8_t simpleDynamicPersonaStateIndex(const String &state) {
+  String visual = simpleDynamicPersonaVisualState(state);
+  for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) {
+    if (visual == SIMPLE_DYNAMIC_PERSONA_STATE_NAMES[i]) return static_cast<int8_t>(i);
+  }
+  return -1;
+}
+
+static uint8_t simpleDynamicPersonaProgressPercent() {
+  uint8_t completeFrames = 0;
+  for (uint8_t i = 0; i < simpleDynamicPersonaTransferFrameCount; i++) {
+    if (simpleDynamicPersonaReceivedFrameMask & (1U << i)) completeFrames++;
+  }
+  uint32_t total = static_cast<uint32_t>(simpleDynamicPersonaTransferFrameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  uint32_t received = simpleDynamicPersonaReceived;
+  if (received > CODE_PET_DYNAMIC_PERSONA_BYTES) received = CODE_PET_DYNAMIC_PERSONA_BYTES;
+  received += static_cast<uint32_t>(completeFrames) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  if (total == 0) return 0;
+  if (received > total) received = total;
+  return static_cast<uint8_t>((received * 100U) / total);
+}
+
+static bool simpleDynamicPersonaMatchesCurrent() {
+  return displayConnected() &&
+         simpleDynamicPersonaReady &&
+         simpleDynamicPersonaSlug.length() &&
+         simpleDynamicPersonaSlug == pet.personaSlug &&
+         simpleDynamicPersonaState == simpleDynamicPersonaVisualState(pet.state);
+}
+
+static bool simpleDynamicPersonaLoadingCurrent() {
+  return displayConnected() &&
+         simpleDynamicPersonaReceiving &&
+         simpleDynamicPersonaShowLoading &&
+         simpleDynamicPersonaTransferSlug == pet.personaSlug &&
+         simpleDynamicPersonaTransferState == simpleDynamicPersonaVisualState(pet.state);
+}
+
+static bool simpleDynamicPersonaScreen() {
+  return simpleDynamicPersonaLoadingCurrent() || simpleDynamicPersonaMatchesCurrent();
+}
+
+static void simpleAbortDynamicPersonaTransfer() {
+  simpleDynamicPersonaReceiving = false;
+  simpleDynamicPersonaShowLoading = true;
+  simpleDynamicPersonaId = "";
+  simpleDynamicPersonaTransferSlug = "";
+  simpleDynamicPersonaTransferState = "idle";
+  simpleDynamicPersonaExpectedSeq = 0;
+  simpleDynamicPersonaReceived = 0;
+  simpleDynamicPersonaTransferFrameCount = 1;
+  simpleDynamicPersonaTransferFrameIndex = 0;
+  simpleDynamicPersonaReceivedFrameMask = 0;
+  simpleDynamicPersonaLastProgressPercent = 0;
+  simpleDynamicPersonaRleIndex = 0;
+  markDirty();
+}
+
+static void simpleClearDynamicPersonaFrame() {
+  simpleDynamicPersonaReady = false;
+  simpleAbortDynamicPersonaTransfer();
+  simpleDynamicPersonaSlug = "";
+  simpleDynamicPersonaState = "idle";
+  simpleDynamicPersonaFrameCount = 1;
+}
+
+static int8_t simpleBase64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+static bool simpleAppendDynamicPersonaDecodedByte(uint8_t value) {
+  if (simpleDynamicPersonaTransferFrameIndex >= CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) return false;
+  uint8_t *pixels = simpleDynamicPersonaPixels[simpleDynamicPersonaTransferFrameIndex];
+
+  if (simpleDynamicPersonaFormat == SIMPLE_DYNAMIC_PERSONA_RLE_RGB565) {
+    simpleDynamicPersonaRleTriple[simpleDynamicPersonaRleIndex++] = value;
+    if (simpleDynamicPersonaRleIndex < 3) return true;
+
+    uint8_t lo = simpleDynamicPersonaRleTriple[0];
+    uint8_t hi = simpleDynamicPersonaRleTriple[1];
+    uint8_t count = simpleDynamicPersonaRleTriple[2];
+    simpleDynamicPersonaRleIndex = 0;
+    if (count == 0) return false;
+    for (uint8_t i = 0; i < count; i++) {
+      if (simpleDynamicPersonaReceived + 2 > CODE_PET_DYNAMIC_PERSONA_BYTES) return false;
+      pixels[simpleDynamicPersonaReceived++] = lo;
+      pixels[simpleDynamicPersonaReceived++] = hi;
+    }
+    return true;
+  }
+
+  if (simpleDynamicPersonaReceived >= CODE_PET_DYNAMIC_PERSONA_BYTES) return false;
+  pixels[simpleDynamicPersonaReceived++] = value;
+  return true;
+}
+
+static bool simpleAppendDynamicPersonaBase64(const String &encoded) {
+  int value = 0;
+  int bits = -8;
+  for (size_t i = 0; i < encoded.length(); i++) {
+    char c = encoded[i];
+    if (c == '=') break;
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+    int8_t digit = simpleBase64Value(c);
+    if (digit < 0) return false;
+    value = (value << 6) | digit;
+    bits += 6;
+    if (bits >= 0) {
+      if (!simpleAppendDynamicPersonaDecodedByte(static_cast<uint8_t>((value >> bits) & 0xFF))) return false;
+      bits -= 8;
+    }
+  }
+  return true;
+}
+
+static void simpleApplyDynamicPersonaPayload(JsonVariantConst src) {
+  String op = String(src["im"] | "");
+
+  if (op == "s") {
+    String id = cleanText(String(src["id"] | ""), 48);
+    String slug = cleanText(String(src["p"] | ""), 48);
+    String displayName = cleanText(String(src["d"] | src["displayName"] | ""), 48);
+    String kind = cleanText(String(src["k"] | src["kind"] | ""), 24);
+    String spriteUrl = String(src["u"] | src["spritesheetUrl"] | "");
+    String theme = cleanText(String(src["th"] | src["theme"] | ""), 12);
+    theme = (theme == "night" || theme == "dark") ? theme : "day";
+    String state = simpleDynamicPersonaVisualState(String(src["st"] | src["state"] | "idle"));
+    String format = String(src["f"] | "");
+    int width = src["w"] | 0;
+    int height = src["h"] | 0;
+    uint32_t size = src["z"] | 0;
+    bool showLoading = (src["ld"] | 1) != 0;
+    int frameCount = src["fc"] | 1;
+    int frameSlot = src["fr"] | 0;
+
+    if (!id.length() || !slug.length() ||
+        width != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
+        height != CODE_PET_DYNAMIC_PERSONA_HEIGHT ||
+        size != CODE_PET_DYNAMIC_PERSONA_BYTES ||
+        frameCount < 1 ||
+        frameCount > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES ||
+        frameSlot < 0 ||
+        frameSlot >= frameCount ||
+        (format != "rgb565" && format != "rgb565-rle") ||
+        simpleDynamicPersonaStateIndex(state) < 0) {
+      simpleAbortDynamicPersonaTransfer();
+      return;
+    }
+
+    if (state != simpleDynamicPersonaVisualState(pet.state)) {
+      simpleDynamicPersonaReceiving = false;
+      return;
+    }
+
+    if (frameSlot == 0) {
+      simpleDynamicPersonaReady = false;
+      simpleDynamicPersonaReceivedFrameMask = 0;
+      simpleDynamicPersonaTransferFrameCount = static_cast<uint8_t>(frameCount);
+      simpleDynamicPersonaTransferSlug = slug;
+      simpleDynamicPersonaTransferState = state;
+    } else if (id != simpleDynamicPersonaId ||
+               slug != simpleDynamicPersonaTransferSlug ||
+               state != simpleDynamicPersonaTransferState ||
+               frameCount != simpleDynamicPersonaTransferFrameCount ||
+               (simpleDynamicPersonaReceivedFrameMask & (1U << frameSlot))) {
+      simpleAbortDynamicPersonaTransfer();
+      return;
+    }
+
+    simpleDynamicPersonaReceiving = true;
+    simpleDynamicPersonaShowLoading = showLoading;
+    simpleDynamicPersonaId = id;
+    simpleDynamicPersonaTransferFrameIndex = static_cast<uint8_t>(frameSlot);
+    simpleDynamicPersonaFormat = format == "rgb565-rle" ? SIMPLE_DYNAMIC_PERSONA_RLE_RGB565 : SIMPLE_DYNAMIC_PERSONA_RAW_RGB565;
+    simpleDynamicPersonaExpectedSeq = 0;
+    simpleDynamicPersonaReceived = 0;
+    simpleDynamicPersonaLastProgressPercent = 0;
+    simpleDynamicPersonaRleIndex = 0;
+    pet.personaSlug = slug;
+    if (displayName.length()) pet.personaName = displayName;
+    if (kind.length()) pet.personaKind = kind;
+    if (!src["u"].isNull() || !src["spritesheetUrl"].isNull()) pet.spriteUrl = spriteUrl;
+    if (theme.length()) pet.theme = theme;
+    markDirty();
+    return;
+  }
+
+  if (op == "x") {
+    String id = String(src["id"] | "");
+    if (!id.length() || id == simpleDynamicPersonaId) simpleAbortDynamicPersonaTransfer();
+    return;
+  }
+
+  if (op == "c") {
+    String id = String(src["id"] | "");
+    int seq = src["q"] | -1;
+    if (!simpleDynamicPersonaReceiving || id != simpleDynamicPersonaId || seq != simpleDynamicPersonaExpectedSeq) return;
+    String data = String(src["d"] | "");
+    if (!data.length() || !simpleAppendDynamicPersonaBase64(data)) {
+      simpleAbortDynamicPersonaTransfer();
+      return;
+    }
+    simpleDynamicPersonaExpectedSeq++;
+    uint8_t progress = simpleDynamicPersonaProgressPercent();
+    if (progress != simpleDynamicPersonaLastProgressPercent) {
+      simpleDynamicPersonaLastProgressPercent = progress;
+      if (simpleDynamicPersonaShowLoading) markDirty();
+    }
+    return;
+  }
+
+  if (op == "e") {
+    String id = String(src["id"] | "");
+    if (simpleDynamicPersonaReceiving && id == simpleDynamicPersonaId &&
+        simpleDynamicPersonaReceived == CODE_PET_DYNAMIC_PERSONA_BYTES &&
+        simpleDynamicPersonaRleIndex == 0) {
+      simpleDynamicPersonaReceiving = false;
+      simpleDynamicPersonaReady = true;
+      simpleDynamicPersonaSlug = simpleDynamicPersonaTransferSlug;
+      simpleDynamicPersonaState = simpleDynamicPersonaTransferState;
+      simpleDynamicPersonaReceivedFrameMask |= (1U << simpleDynamicPersonaTransferFrameIndex);
+      if (simpleDynamicPersonaReceivedFrameMask & 0x01) simpleDynamicPersonaFrameCount = 1;
+      uint8_t completeMask = (1U << simpleDynamicPersonaTransferFrameCount) - 1U;
+      if ((simpleDynamicPersonaReceivedFrameMask & completeMask) == completeMask) {
+        simpleDynamicPersonaFrameCount = simpleDynamicPersonaTransferFrameCount;
+        simpleDynamicPersonaTransferSlug = "";
+        simpleDynamicPersonaTransferState = simpleDynamicPersonaState;
+        simpleDynamicPersonaLastProgressPercent = 100;
+      }
+      markDirty();
+    } else if (simpleDynamicPersonaReceiving) {
+      simpleAbortDynamicPersonaTransfer();
+    }
+  }
+}
+
+static void renderSimpleDynamicPersonaContent(uint16_t bg, uint16_t panel, uint16_t ink, uint16_t accent) {
+  const int16_t sw = screenW();
+  const int16_t sh = screenH();
+  int16_t contentH = sh > 56 ? sh - 56 : 0;
+  fillRect(0, 32, sw, contentH, bg);
+
+  if (simpleDynamicPersonaLoadingCurrent()) {
+    const uint8_t progress = simpleDynamicPersonaProgressPercent();
+    int16_t panelW = sw > 32 ? sw - 32 : 96;
+    if (panelW < 96) panelW = 96;
+    if (panelW > 164) panelW = 164;
+    const int16_t panelX = (sw - panelW) / 2;
+    int16_t panelY = (sh - 56) / 2;
+    if (panelY < 54) panelY = 54;
+    const int16_t trackW = panelW - 24;
+    fillRoundRect(panelX, panelY, panelW, 56, 10, panel);
+    drawRoundRect(panelX, panelY, panelW, 56, 10, accent);
+    drawText("Syncing", panelX + 12, panelY + 13, 1, ink, panel);
+    drawText(String(progress) + "%", panelX + panelW - 38, panelY + 13, 1, accent, panel);
+    fillRoundRect(panelX + 12, panelY + 38, trackW, 8, 4, dimColor(ink, 20));
+    int16_t fillWidth = (trackW * progress) / 100;
+    if (fillWidth < 1) fillWidth = 1;
+    fillRoundRect(panelX + 12, panelY + 38, fillWidth, 8, 4, accent);
+    return;
+  }
+
+  if (!simpleDynamicPersonaMatchesCurrent()) return;
+  uint8_t count = simpleDynamicPersonaFrameCount;
+  if (count < 1) count = 1;
+  if (count > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) count = CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES;
+  uint8_t slot = count > 1 ? (frameIndex % count) : 0;
+  int16_t x = (sw - CODE_PET_DYNAMIC_PERSONA_WIDTH) / 2;
+  int16_t y = (sh - CODE_PET_DYNAMIC_PERSONA_HEIGHT) / 2;
+  if (y < 36) y = 36;
+  if (y + CODE_PET_DYNAMIC_PERSONA_HEIGHT > sh - 24) y = sh - 24 - CODE_PET_DYNAMIC_PERSONA_HEIGHT;
+  if (y < 32) y = 32;
+  tft.pushImage(x, y, CODE_PET_DYNAMIC_PERSONA_WIDTH, CODE_PET_DYNAMIC_PERSONA_HEIGHT, reinterpret_cast<uint16_t *>(simpleDynamicPersonaPixels[slot]));
 }
 #endif
 
@@ -1130,6 +1806,7 @@ static void renderScreen() {
   updateStatusPixel();
 
   const bool oled = screenW() <= 128 && screenH() <= 64;
+  const bool connected = displayConnected();
   const bool night = isNightTheme();
   uint16_t bg = oled || night ? 0 : rgb565(238, 244, 247);
   uint16_t header = oled ? 0 : rgb565(24, 32, 42);
@@ -1140,7 +1817,7 @@ static void renderScreen() {
   uint16_t body = oled ? 0 : personaColor();
   uint16_t accent = oled ? 1 : stateColor(pet.state);
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
   if (!oled && renderPersonaWithLvgl(bg, header, panel, ink, muted, accent)) {
     lv_timer_handler();
     uiDirty = false;
@@ -1151,9 +1828,9 @@ static void renderScreen() {
   fillScreen(bg);
 
   if (oled) {
-    drawText(bleConnected ? cleanText(pet.agent, 12) : "", 0, 0, 1, 1, 0);
-    drawText(bleConnected ? cleanText(displayStateLabel(), 12) : "", 0, 10, 1, 1, 0);
-    drawText(bleConnected ? cleanText(pet.output, 18) : String(CODE_PET_DISCONNECTED_LABEL), 0, screenH() - 10, 1, 1, 0);
+    drawText(connected ? cleanText(pet.agent, 12) : "", 0, 0, 1, 1, 0);
+    drawText(connected ? cleanText(displayStateLabel(), 12) : "", 0, 10, 1, 1, 0);
+    drawText(connected ? cleanText(pet.output, 18) : String(CODE_PET_DISCONNECTED_LABEL), 0, screenH() - 10, 1, 1, 0);
     renderPetFace(screenW() - 38, screenH() / 2 + 2, 7, 0, 1, 1, 0);
     displayFlush();
     return;
@@ -1161,19 +1838,31 @@ static void renderScreen() {
 
   int16_t w = screenW();
   int16_t h = screenH();
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  bool simplePersonaScreen = simpleDynamicPersonaScreen();
+#else
+  bool simplePersonaScreen = false;
+#endif
   fillRect(0, 0, w, 32, header);
   drawText("Vibe Pet", 8, 9, 1, rgb565(255, 255, 255), header);
-  drawText(bleConnected ? "BLE" : "WAIT", w - 42, 9, 1, bleConnected ? rgb565(113, 210, 159) : rgb565(190, 198, 209), header);
+  String connectionText = connected ? (bleConnected ? "BLE" : "TEST") : "WAIT";
+  drawText(connectionText, w - 42, 9, 1, connected ? rgb565(113, 210, 159) : rgb565(190, 198, 209), header);
 
-  fillRoundRect(8, 40, w - 16, 34, 8, panel);
-  drawRoundRect(8, 40, w - 16, 34, 8, rgb565(215, 221, 231));
-  drawText(bleConnected ? cleanText(displayStateLabel(), 18) : "", 18, 50, 1, accent, panel);
-  drawText(bleConnected ? cleanText(pet.agent, 16) : "", w / 2, 50, 1, muted, panel);
-
-  renderPetFace(w / 2, h / 2 + 22, min(w, h) > 200 ? 13 : 10, body, accent, ink, face);
+  if (!simplePersonaScreen) {
+    fillRoundRect(8, 40, w - 16, 34, 8, panel);
+    drawRoundRect(8, 40, w - 16, 34, 8, rgb565(215, 221, 231));
+    drawText(connected ? cleanText(displayStateLabel(), 18) : "", 18, 50, 1, accent, panel);
+    drawText(connected ? cleanText(pet.agent, 16) : "", w / 2, 50, 1, muted, panel);
+    renderPetFace(w / 2, h / 2 + 22, min(w, h) > 200 ? 13 : 10, body, accent, ink, face);
+  }
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  else {
+    renderSimpleDynamicPersonaContent(bg, panel, ink, accent);
+  }
+#endif
 
   fillRect(0, h - 24, w, 24, header);
-  String footer = bleConnected ? cleanText(pet.output, 40) : String(CODE_PET_DISCONNECTED_LABEL);
+  String footer = connected ? cleanText(pet.output, 40) : String(CODE_PET_DISCONNECTED_LABEL);
   drawText(footer, 8, h - 17, 1, rgb565(255, 255, 255), header);
   displayFlush();
   uiDirty = false;
@@ -1183,7 +1872,7 @@ static void markDirty() {
   uiDirty = true;
 }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
 static const lv_img_dsc_t *dynamicPersonaFrameForSlug(const String &slug, const String &state) {
   String visualState = dynamicPersonaVisualState(state);
   if (dynamicPersonaReady && dynamicPersonaSlug.length() && slug == dynamicPersonaSlug &&
@@ -1206,6 +1895,7 @@ static const lv_img_dsc_t *dynamicPersonaFrameForSlugAnyState(const String &slug
 
 static void invalidateDynamicPersonaImage(uint8_t slot) {
   if (slot >= CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) return;
+  dynamicPersonaImageVersions[slot]++;
   lv_img_cache_invalidate_src(&dynamicPersonaImages[slot]);
 }
 
@@ -1230,6 +1920,9 @@ static void clearDynamicPersonaFrame() {
   dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
   dynamicPersonaRleIndex = 0;
+  for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES; i++) {
+    invalidateDynamicPersonaImage(i);
+  }
 }
 
 #if defined(ESP32)
@@ -1652,8 +2345,10 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
 #endif
 
 static void setDisconnectedPetState() {
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
   abortDynamicPersonaTransfer();
+#elif defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  simpleAbortDynamicPersonaTransfer();
 #endif
   String currentTheme = pet.theme;
   bool changed = pet.state != "idle" || pet.stateLabel.length() || pet.agent.length() ||
@@ -1702,11 +2397,17 @@ static void applyPacket(JsonVariantConst src) {
   int nextActiveCount = src["n"] | src["activeCount"] | 0;
   nextStateLabel = localizedStateLabel(nextState, nextLocale, nextStateLabel);
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
   if (dynamicPersonaReceiving &&
       dynamicPersonaTransferSlug.length() &&
       nextPersonaSlug != dynamicPersonaTransferSlug) {
     abortDynamicPersonaTransfer();
+  }
+#elif defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  if (simpleDynamicPersonaReceiving &&
+      simpleDynamicPersonaTransferSlug.length() &&
+      nextPersonaSlug != simpleDynamicPersonaTransferSlug) {
+    simpleAbortDynamicPersonaTransfer();
   }
 #endif
 
@@ -1748,18 +2449,26 @@ static void applyPayload(const String &payload) {
     return;
   }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
   if (doc["im"].is<const char *>()) {
     applyDynamicPersonaPayload(doc.as<JsonVariantConst>());
     return;
   }
+#elif defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+  if (doc["im"].is<const char *>()) {
+    simpleApplyDynamicPersonaPayload(doc.as<JsonVariantConst>());
+    return;
+  }
+#else
+  if (doc["im"].is<const char *>()) return;
 #endif
 
   if (doc["pets"].is<JsonArray>()) {
     JsonArray pets = doc["pets"].as<JsonArray>();
     JsonVariantConst selected;
     for (JsonVariantConst item : pets) {
-      String state = normalizePacketState(String(item["state"] | item["packet"]["s"] | "idle"));
+      JsonVariantConst packet = item["packet"];
+      String state = normalizePacketState(String(item["state"] | item["s"] | packet["state"] | packet["s"] | "idle"));
       if (state != "idle" && state != "sleeping") {
         selected = item;
         break;
@@ -1885,7 +2594,7 @@ static void handleBleWriteValue(const std::string &value) {
   enqueuePayload(stringFromBleBytes(value));
 }
 
-#if defined(CODE_PET_HAS_BLE)
+#if defined(CODE_PET_HAS_BLE) || defined(CODE_PET_HAS_RPC_BLE)
 static void restartAdvertising() {
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(SERVICE_UUID);
@@ -1896,6 +2605,9 @@ static void restartAdvertising() {
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     (void)server;
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+    localTestActive = false;
+#endif
     bleConnected = true;
     clearDisconnectedPetState();
     noteDisplayActivity();
@@ -1904,6 +2616,9 @@ class ServerCallbacks : public BLEServerCallbacks {
 
   void onDisconnect(BLEServer *server) override {
     (void)server;
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+    localTestActive = false;
+#endif
     bleConnected = false;
     clearPayloadQueue();
     clearBleFragment();
@@ -1924,7 +2639,9 @@ class StateCallbacks : public BLECharacteristicCallbacks {
 
 static void setupBle() {
   BLEDevice::init(CODE_PET_DEVICE_NAME);
+#if defined(CODE_PET_HAS_BLE)
   BLEDevice::setMTU(CODE_PET_BLE_MTU);
+#endif
   BLEServer *server = BLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
   BLEService *service = server->createService(SERVICE_UUID);
@@ -1972,10 +2689,52 @@ static void pollBridge() {
 }
 #endif
 
+#if defined(CODE_PET_TEST_BUTTON_PIN)
+static const char *CODE_PET_TEST_STATES[] = {
+  "idle", "thinking", "working", "juggling", "building",
+  "attention", "notification", "error", "sweeping", "sleeping"
+};
+static const uint8_t CODE_PET_TEST_STATE_COUNT = sizeof(CODE_PET_TEST_STATES) / sizeof(CODE_PET_TEST_STATES[0]);
+static uint8_t codePetTestIndex = 0;
+
+static void setupTestButton() {
+  pinMode(CODE_PET_TEST_BUTTON_PIN, INPUT_PULLUP);
+}
+
+static void handleTestButton() {
+  static bool wasDown = false;
+  bool down = digitalRead(CODE_PET_TEST_BUTTON_PIN) == LOW;
+  if (down && !wasDown) {
+    codePetTestIndex = (codePetTestIndex + 1) % CODE_PET_TEST_STATE_COUNT;
+    String nextState = normalizePacketState(String(CODE_PET_TEST_STATES[codePetTestIndex]));
+    localTestActive = true;
+    pet.state = nextState;
+    pet.stateLabel = localizedStateLabel(nextState, pet.locale, "");
+    pet.agent = "local";
+    pet.event = "button-test";
+    pet.title = "";
+    pet.output = "button-test";
+    if (!pet.personaSlug.length()) pet.personaSlug = "lulu";
+    if (!pet.personaName.length()) pet.personaName = "Lulu";
+    pet.activeCount = nextState == "idle" ? 0 : 1;
+    pet.receivedAt = millis();
+#if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+    simpleClearDynamicPersonaFrame();
+#endif
+    noteDisplayActivity();
+    markDirty();
+  }
+  wasDown = down;
+}
+#else
+static void setupTestButton() {}
+static void handleTestButton() {}
+#endif
+
 void setup() {
   Serial.begin(115200);
   displayBegin();
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
   loadDynamicPersonaFrame();
 #endif
 #if defined(CODE_PET_STATUS_PIXEL)
@@ -1983,9 +2742,10 @@ void setup() {
   statusPixel.clear();
   statusPixel.show();
 #endif
+  setupTestButton();
   setDisconnectedPetState();
   markDirty();
-#if defined(CODE_PET_HAS_BLE)
+#if defined(CODE_PET_HAS_BLE) || defined(CODE_PET_HAS_RPC_BLE)
   setupBle();
 #endif
 #if defined(CODE_PET_USE_WIFI)
@@ -1997,7 +2757,7 @@ void loop() {
 #if defined(CODE_PET_DISPLAY_M5UNIFIED)
   M5.update();
 #endif
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
+#if defined(CODE_PET_USE_COLOR_LVGL)
   uint32_t now = millis();
   uint32_t delta = now - lvLastTickAt;
   if (delta > 0) {
@@ -2013,6 +2773,8 @@ void loop() {
     applyPayload(payload);
   }
 
+  handleTestButton();
+
 #if defined(CODE_PET_USE_WIFI)
   if (millis() - lastPollAt > 1000) {
     lastPollAt = millis();
@@ -2020,14 +2782,14 @@ void loop() {
   }
 #endif
 
-  if (millis() - lastFrameAt > 240) {
+  if (millis() - lastFrameAt > CODE_PET_ANIMATION_FRAME_MS) {
     lastFrameAt = millis();
     frameIndex++;
     uiDirty = true;
   }
 
-#if defined(CODE_PET_USE_LVGL) && defined(CODE_PET_DISPLAY_TFT_ESPI)
-  lv_timer_handler();
+#if defined(CODE_PET_USE_COLOR_LVGL)
+  if (!uiDirty) lv_timer_handler();
 #endif
   if (uiDirty) renderScreen();
 }

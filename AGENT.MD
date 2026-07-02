@@ -18,6 +18,8 @@ src/firmware/wio-terminal-code-pet/
                              Wio Terminal BLE 显示端
 src/firmware/esp-ai-mini-ext-tft-code-pet/
                              ESP-AI Mini Ext BLE TFT 显示端
+src/firmware/sensecap-indicator-code-pet/
+                             SenseCAP Indicator BLE 显示端
 src/firmware/esp-ai-mini-ext-status/
                              ESP-AI Mini Ext BLE 状态灯端
 src/firmware/esp-display-code-pet/
@@ -128,7 +130,7 @@ npm run package:all
 如果连接时出现 `User cancelled the requestDevice() chooser`：
 
 - 先完全退出当前 Vibe Pet 窗口，再重新运行 `npm start`，避免旧桌面进程仍在使用旧代码。
-- 确认 Wio Terminal 或 ESP-AI Mini Ext 已上电，并正在广播 `VibePet-Wio` / `VibePet-ESP-AI-Mini-TFT` / `VibePet-ESP-AI-Mini`。
+- 确认 Wio Terminal、ESP-AI Mini Ext 或 SenseCAP Indicator 已上电，并正在广播 `VibePet-Wio` / `VibePet-ESP-AI-Mini-TFT` / `VibePet-ESP-AI-Mini` / `VibePet-SenseCAP-Indicator`。
 - 桌面桥会持续扫描附近 BLE 设备，名字匹配 Vibe Pet 的设备会标记为「推荐」。如果选择了其他 BLE 设备，通常会提示它没有 Vibe Pet BLE 服务。
 
 ## 设备端
@@ -166,6 +168,12 @@ cd src/firmware/esp-ai-mini-ext-status
 pio run -t upload
 ```
 
+### SenseCAP Indicator
+
+[SenseCAP Indicator](https://wiki.seeedstudio.com/cn/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) 是 Seeed 的 4 英寸 480×480 电容触控屏开发板，由 ESP32-S3 与 RP2040 双 MCU 驱动，支持 Wi-Fi / Bluetooth 5.0 LE。显示端使用 ST7701S RGB 接口，I2C 扩展芯片 PCA9535 控制 CS / RESET，背光 GPIO45。
+
+固件工程目录：`src/firmware/sensecap-indicator-code-pet`。BLE 广播名 `VibePet-SenseCAP-Indicator`，在屏幕上用 LVGL 绘制桌宠。
+
 桌面端应用内烧录不调用 PlatformIO。每个硬件目录下放置可直接烧录的 `main.bin` 后，ESP 目标会通过内置 JS esptool 从 `0x0` 写入该文件；因此 ESP32/ESP8266 需要 bootloader、partition 和 app 分段时，`main.bin` 应该是合并后的镜像。Wio Terminal 这类非 ESP 目标走 Arduino CLI 兜底。
 
 ### ESP32 / ESP8266 带屏设备
@@ -181,7 +189,6 @@ ESP-AI Common 3.0.0 使用 [官方开发板资料](https://espai.fun/open/pcb/co
 | `esp_ai_common_3_tft` | ESP-AI Common 3.0.0 TFT |
 | `esp_ai_diy_esp32s3_oled` | ESP-AI DIY ESP32S3 OLED |
 | `m5stack_core2` | M5Stack Core2 |
-| `m5stack_cores3` | M5Stack CoreS3 |
 | `m5stickc_plus2` | M5StickC Plus2 |
 | `m5stack_cardputer` | M5Stack Cardputer |
 | `m5stack_atoms3` | M5Stack AtomS3 |

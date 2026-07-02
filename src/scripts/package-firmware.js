@@ -36,6 +36,14 @@ const TARGETS = [
     packer: "esp",
   },
   {
+    id: "sensecap_indicator",
+    aliases: ["sensecap", "sensecap-indicator-code-pet"],
+    name: "SenseCAP Indicator",
+    dir: "sensecap-indicator-code-pet",
+    env: "code_pet",
+    packer: "esp",
+  },
+  {
     id: "m5stack_cores3",
     aliases: ["m5stack-cores3-code-pet"],
     name: "M5Stack CoreS3",

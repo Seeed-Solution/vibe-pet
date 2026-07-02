@@ -22,13 +22,12 @@ npm run firmware:package
 | `esp-ai-mini-ext-tft-code-pet` | ESP-AI-MINI AI Dev Kit | BLE |
 | `esp-ai-v3-tft-code-pet` | ESP-AI v3 Dev Board | BLE |
 | `esp-ai-v3-tft-code-pet` | ESP-AI v4 Dev Board | BLE |
-| `m5stack-cores3-code-pet` | M5Stack CoreS3 | BLE |
+| `sensecap-indicator-code-pet` | SenseCAP Indicator | BLE |
 
 Example contributor build/upload commands:
 
 ```bash
 pio run -d src/firmware/esp-ai-mini-ext-tft-code-pet -t upload
-pio run -d src/firmware/m5stack-cores3-code-pet -t upload
 ```
 
 ESP-AI-MINI AI Dev Kit follows the official 2.4-inch profile: `ST7789_2_DRIVER`,

@@ -12,8 +12,8 @@
 | State characteristic UUID | `7b71f91a-3c7b-4c3b-9f2d-2dbdccd5c002` |
 | Characteristic 方向 | 桌面端写入，设备端接收 |
 | 负载编码 | UTF-8 JSON |
-| 设备名前缀 | `VibePet-Wio`、`VibePet-ESP-AI`、`VibePet-ESP-Display`、`VibePet-M5`、`VibePet-LILYGO`、`VibePet-Heltec`、`VibePet-WEMOS` |
-| 兼容旧前缀 | `CodePet-Wio`、`CodePet-ESP-AI`、`CodePet-ESP-Display`、`CodePet-M5`、`CodePet-LILYGO`、`CodePet-Heltec`、`CodePet-WEMOS` |
+| 设备名前缀 | `VibePet-Wio`、`VibePet-ESP-AI`、`VibePet-ESP-Display`、`VibePet-SenseCAP`、`VibePet-M5`、`VibePet-LILYGO`、`VibePet-Heltec`、`VibePet-WEMOS` |
+| 兼容旧前缀 | `CodePet-Wio`、`CodePet-ESP-AI`、`CodePet-ESP-Display`、`CodePet-SenseCAP`、`CodePet-M5`、`CodePet-LILYGO`、`CodePet-Heltec`、`CodePet-WEMOS` |
 
 BLE 设备需要广播 service UUID，并提供一个可写 characteristic。桌面应用会在活动桌宠状态变化或需要重发时写入一条紧凑 JSON。
 

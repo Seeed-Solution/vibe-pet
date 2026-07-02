@@ -17,12 +17,13 @@ const AGENTS = {
       SessionEnd: "sleeping",
       UserPromptSubmit: "thinking",
       PreToolUse: "working",
-      PostToolUse: "working",
+      PostToolUse: "thinking",
+      PostToolBatch: "thinking",
       PostToolUseFailure: "error",
       Stop: "attention",
       StopFailure: "error",
       SubagentStart: "juggling",
-      SubagentStop: "working",
+      SubagentStop: "thinking",
       PreCompact: "sweeping",
       PostCompact: "attention",
       Notification: "notification",
@@ -317,6 +318,14 @@ function outputFor(agent, hookName) {
   return "{}";
 }
 
+function resolveClaudeCodeState(hookName, state, payload = {}) {
+  if (hookName !== "Stop" || state !== "attention") return state;
+  if (payload.stop_hook_active === true) return "thinking";
+  const tasks = payload.background_tasks;
+  if (Array.isArray(tasks) && tasks.length) return "thinking";
+  return state;
+}
+
 (async () => {
   const agentId = process.argv[2] || "";
   const fallbackEvent = process.argv[3] || "";
@@ -331,6 +340,9 @@ function outputFor(agent, hookName) {
   if (agentId === "gemini-cli" && hookName === "AfterTool") {
     const response = payload.tool_response;
     if (response && response.error) state = "error";
+  }
+  if ((agentId === "claude-code" || agentId === "claude-cli") && state) {
+    state = resolveClaudeCodeState(hookName, state, payload);
   }
   if (!state) return;
 
