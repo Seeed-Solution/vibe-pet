@@ -50,12 +50,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wangzongming/vibe-pet.git"
+    "url": "git+https://github.com/Seeed-Solution/vibe-pet.git"
   },
   "bugs": {
-    "url": "https://github.com/wangzongming/vibe-pet/issues"
+    "url": "https://github.com/Seeed-Solution/vibe-pet/issues"
   },
-  "homepage": "https://github.com/wangzongming/vibe-pet#readme",
+  "homepage": "https://github.com/Seeed-Solution/vibe-pet#readme",
   "license": "MIT",
   "engines": {
     "node": ">=18"

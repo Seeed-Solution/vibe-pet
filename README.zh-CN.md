@@ -23,8 +23,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wangzongming/vibe-pet"><img alt="stars" src="https://img.shields.io/github/stars/wangzongming/vibe-pet?style=flat-square"></a>
-  <a href="https://github.com/wangzongming/vibe-pet/issues"><img alt="issues" src="https://img.shields.io/github/issues/wangzongming/vibe-pet?style=flat-square"></a>
+  <a href="https://github.com/Seeed-Solution/vibe-pet"><img alt="stars" src="https://img.shields.io/github/stars/Seeed-Solution/vibe-pet?style=flat-square"></a>
+  <a href="https://github.com/Seeed-Solution/vibe-pet/issues"><img alt="issues" src="https://img.shields.io/github/issues/Seeed-Solution/vibe-pet?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-111111?style=flat-square"></a>
   <a href="https://nodejs.org/"><img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D18-2f7d32?style=flat-square"></a>
   <a href="https://www.electronjs.org/"><img alt="Electron" src="https://img.shields.io/badge/runtime-Electron-4666ff?style=flat-square"></a>
@@ -79,7 +79,7 @@ Vibe Pet 会默认尝试同步这些 AI 编程助手的 hooks 或插件配置：
 
 ## 下载安装
 
-从 [Releases 页面](https://github.com/wangzongming/vibe-pet/releases) 下载适合你平台的安装包。
+从 [Releases 页面](https://github.com/Seeed-Solution/vibe-pet/releases) 下载适合你平台的安装包。
 
 - macOS：下载 `.dmg` 或 `.zip` 构建。
 - Windows：下载 `.exe` 安装包。

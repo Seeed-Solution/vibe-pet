@@ -19,7 +19,7 @@ scope can be agreed before implementation.
 
 If you only want to install a release build or compare your changes with a
 packaged version, download an installer from the
-[Releases page](https://github.com/wangzongming/vibe-pet/releases).
+[Releases page](https://github.com/Seeed-Solution/vibe-pet/releases).
 
 - macOS: download the `.dmg` or `.zip` build.
 - Windows: download the `.exe` installer.

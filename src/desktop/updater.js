@@ -9,7 +9,7 @@ try {
 
 const UPDATE_FEED = {
   provider: "github",
-  owner: "wangzongming",
+  owner: "Seeed-Solution",
   repo: "vibe-pet",
   releaseType: "release",
 };

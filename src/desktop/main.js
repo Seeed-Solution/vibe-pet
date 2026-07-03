@@ -21,8 +21,8 @@ const { HOOK_RUNNER_ENV, runAll: syncAgentHooks } = require("../scripts/install-
 
 const DEFAULT_PORT = 17384;
 const BLUETOOTH_SCAN_NAME_PREFIX = "VibePet";
-const PROJECT_REPO_URL = "https://github.com/wangzongming/vibe-pet";
-const PROJECT_REPO_API_URL = "https://api.github.com/repos/wangzongming/vibe-pet";
+const PROJECT_REPO_URL = "https://github.com/Seeed-Solution/vibe-pet";
+const PROJECT_REPO_API_URL = "https://api.github.com/repos/Seeed-Solution/vibe-pet";
 const PETDEX_REPO_URL = "https://github.com/crafter-station/petdex";
 const RUNTIME_PATH = path.join(os.homedir(), ".code-pet", "runtime.json");
 const ANALYTICS_STATE_PATH = path.join(os.homedir(), ".code-pet", "analytics.json");
