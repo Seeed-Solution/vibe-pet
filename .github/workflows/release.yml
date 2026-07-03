@@ -30,6 +30,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Verify Release Version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node src/scripts/check-release-version.js
+
       - name: Install
         run: npm ci
 
