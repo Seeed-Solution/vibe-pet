@@ -222,7 +222,6 @@ yarn-error.log*
 
 # PlatformIO / embedded
 .pio/
-src/firmware/**/main.bin
 src/firmware/**/main.bin.tmp-*
 .vscode/.browse.c_cpp.db*
 .vscode/c_cpp_properties.json
