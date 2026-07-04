@@ -1193,6 +1193,12 @@ static bool prepareLvPrescaledImage(uint8_t slot, const lv_img_dsc_t *frame) {
       frame->header.h != CODE_PET_DYNAMIC_PERSONA_HEIGHT) {
     return false;
   }
+  // Built-in LVGL persona assets carry an alpha byte per pixel; only raw RGB565
+  // dynamic frames can be sampled directly into the prescale buffer.
+  if (frame->header.cf != LV_IMG_CF_TRUE_COLOR ||
+      frame->data_size < CODE_PET_DYNAMIC_PERSONA_BYTES) {
+    return false;
+  }
 
   const uint16_t *src = reinterpret_cast<const uint16_t *>(frame->data);
   uint16_t *dst = reinterpret_cast<uint16_t *>(lvPrescaledPixels[slot]);
