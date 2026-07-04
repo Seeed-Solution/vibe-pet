@@ -31,8 +31,8 @@ const HARDWARE_PERSONA_FRAME_WIDTH = 144;
 const HARDWARE_PERSONA_FRAME_HEIGHT = 156;
 const HARDWARE_PERSONA_FRAME_BYTES = HARDWARE_PERSONA_FRAME_WIDTH * HARDWARE_PERSONA_FRAME_HEIGHT * 2;
 const HARDWARE_PERSONA_MAX_FRAMES = 2;
-const HARDWARE_PERSONA_CHUNK_CHARS = 120;
-const HARDWARE_PERSONA_CHUNK_DELAY_MS = 8;
+const HARDWARE_PERSONA_CHUNK_CHARS = 360;
+const HARDWARE_PERSONA_CHUNK_DELAY_MS = 6;
 const HARDWARE_OUTPUT_MAX_CHARS = 120;
 const BLUETOOTH_JSON_MAX_BYTES = 480;
 const BLUETOOTH_TITLE_MAX_BYTES = 48;
@@ -74,6 +74,11 @@ const HARDWARE_PERSONA_SEQUENCE_INDEXES_BY_STATE = {
   juggling: [0, 2],
 };
 const HARDWARE_PERSONA_STATES = ["idle", "notification", "working", "error", "thinking", "attention"];
+const HARDWARE_PERSONA_ATLAS_COLS = HARDWARE_PERSONA_MAX_FRAMES;
+const HARDWARE_PERSONA_ATLAS_ROWS = HARDWARE_PERSONA_STATES.length;
+const HARDWARE_PERSONA_ATLAS_WIDTH = HARDWARE_PERSONA_FRAME_WIDTH * HARDWARE_PERSONA_ATLAS_COLS;
+const HARDWARE_PERSONA_ATLAS_HEIGHT = HARDWARE_PERSONA_FRAME_HEIGHT * HARDWARE_PERSONA_ATLAS_ROWS;
+const HARDWARE_PERSONA_ATLAS_BYTES = HARDWARE_PERSONA_ATLAS_WIDTH * HARDWARE_PERSONA_ATLAS_HEIGHT * 2;
 const VIEW_STATE_PRIORITY = {
   error: 100,
   notification: 95,
@@ -408,8 +413,18 @@ function isWioBluetoothDevice() {
   return /^(VibePet|CodePet)-Wio/.test(bluetoothDeviceName());
 }
 
+function isAtlasBluetoothDevice() {
+  return /^(VibePet|CodePet)-(ESP-AI|ESP-Display|SenseCAP)/.test(bluetoothDeviceName());
+}
+
+function hardwarePersonaTransferMode() {
+  if (isWioBluetoothDevice()) return "frames";
+  if (isAtlasBluetoothDevice()) return "atlas";
+  return "";
+}
+
 function hardwarePersonaSyncMode() {
-  return isWioBluetoothDevice() ? "current-state" : "all-states";
+  return hardwarePersonaTransferMode() === "frames" ? "current-state" : "all-states";
 }
 
 function resetHardwarePersonaTransferState(options = {}) {
@@ -813,7 +828,7 @@ function compactBluetoothStatePayload(payload) {
 
 function compactBluetoothImagePayload(payload) {
   const next = { ...(payload || {}) };
-  if (next.im !== "s") return next;
+  if (next.im !== "s" && next.im !== "as") return next;
   delete next.u;
   if (next.p) next.p = clampUtf8Text(next.p, 48);
   if (next.d) next.d = clampUtf8Text(next.d, 48);
@@ -1187,7 +1202,7 @@ function hardwarePersonaBackground(theme) {
 
 function rgb565BytesFromImageData(imageData) {
   const rgba = imageData.data;
-  const bytes = new Uint8Array(HARDWARE_PERSONA_FRAME_BYTES);
+  const bytes = new Uint8Array(imageData.width * imageData.height * 2);
   for (let i = 0, j = 0; i < rgba.length; i += 4, j += 2) {
     const value = ((rgba[i] & 0xF8) << 8) | ((rgba[i + 1] & 0xFC) << 3) | (rgba[i + 2] >> 3);
     bytes[j] = value & 0xFF;
@@ -1304,6 +1319,73 @@ async function buildHardwarePersonaFrameBundle(persona, theme, states = HARDWARE
     });
   }
   return entries;
+}
+
+async function buildHardwarePersonaAtlas(persona, theme, states = HARDWARE_PERSONA_STATES) {
+  const image = await loadHardwarePersonaImage(persona.spritesheetUrl);
+  const meta = hardwarePersonaMeta(persona.spritesheetUrl, image);
+  const sourceCols = Math.max(1, Number(meta.cols) || PETDEX_DEFAULT_COLS);
+  const sourceRows = Math.max(1, Number(meta.rows) || PETDEX_DEFAULT_ROWS);
+  const sourceW = image.naturalWidth / sourceCols;
+  const sourceH = image.naturalHeight / sourceRows;
+  const canvas = document.createElement("canvas");
+  canvas.width = HARDWARE_PERSONA_ATLAS_WIDTH;
+  canvas.height = HARDWARE_PERSONA_ATLAS_HEIGHT;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Unable to prepare persona atlas.");
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = hardwarePersonaBackground(theme);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const atlasStates = states.map((state) => hardwarePersonaVisualState(state));
+  const keyParts = [];
+  for (let stateIndex = 0; stateIndex < atlasStates.length; stateIndex++) {
+    const state = atlasStates[stateIndex];
+    const row = Math.max(0, Math.min(sourceRows - 1, PETDEX_ROW_BY_STATE[state] === undefined ? 0 : PETDEX_ROW_BY_STATE[state]));
+    const sequence = petdexFrameSequenceForState(state, sourceCols);
+    const sequenceIndexes = hardwarePersonaSequenceIndexes(sequence, HARDWARE_PERSONA_ATLAS_COLS, state);
+    const frameKeys = [];
+    for (let frameSlot = 0; frameSlot < HARDWARE_PERSONA_ATLAS_COLS; frameSlot++) {
+      const sequenceIndex = sequenceIndexes[Math.min(frameSlot, sequenceIndexes.length - 1)] || 0;
+      const frame = sequence[Math.max(0, sequenceIndex) % sequence.length] || 0;
+      frameKeys.push(frame);
+      ctx.drawImage(
+        image,
+        frame * sourceW,
+        row * sourceH,
+        sourceW,
+        sourceH,
+        frameSlot * HARDWARE_PERSONA_FRAME_WIDTH,
+        stateIndex * HARDWARE_PERSONA_FRAME_HEIGHT,
+        HARDWARE_PERSONA_FRAME_WIDTH,
+        HARDWARE_PERSONA_FRAME_HEIGHT
+      );
+    }
+    keyParts.push(`${state}:${frameKeys.join(",")}`);
+  }
+
+  const raw = rgb565BytesFromImageData(ctx.getImageData(0, 0, canvas.width, canvas.height));
+  const rle = encodeRgb565Rle(raw);
+  const encoded = rle.length < raw.length ? rle : raw;
+  const format = encoded === rle ? "rgb565-rle" : "rgb565";
+  return {
+    bytes: encoded,
+    format,
+    states: atlasStates,
+    key: [
+      persona.slug || "",
+      persona.spritesheetUrl || "",
+      theme || "day",
+      HARDWARE_PERSONA_ATLAS_WIDTH,
+      HARDWARE_PERSONA_ATLAS_HEIGHT,
+      HARDWARE_PERSONA_ATLAS_COLS,
+      HARDWARE_PERSONA_ATLAS_ROWS,
+      format,
+      keyParts.join("|"),
+    ].join("|"),
+  };
 }
 
 function selectablePetdexPets() {
@@ -2641,7 +2723,10 @@ function hardwarePersonaLoadingSignature(hardwarePet, packet) {
   if (!hardwarePet || !hardwarePet.persona) return "";
   const persona = desktopPetPersona(hardwarePet.persona);
   if (isEmbeddedHardwarePersona(persona) || !persona.spritesheetUrl) return "";
+  const mode = hardwarePersonaTransferMode();
+  if (!mode) return "";
   return [
+    mode,
     persona.slug || "",
     persona.spritesheetUrl || "",
     hardwarePersonaTransferTheme(packet),
@@ -2653,7 +2738,10 @@ function hardwarePersonaTransferSignature(hardwarePet, packet) {
   if (!hardwarePet || !hardwarePet.persona) return "";
   const persona = desktopPetPersona(hardwarePet.persona);
   if (isEmbeddedHardwarePersona(persona) || !persona.spritesheetUrl) return "";
+  const mode = hardwarePersonaTransferMode();
+  if (!mode) return "";
   return [
+    mode,
     persona.slug || "",
     persona.spritesheetUrl || "",
     hardwarePersonaTransferTheme(packet),
@@ -2693,7 +2781,92 @@ async function flushPendingHardwareStatusPacket(revision, signature) {
   setConnection(activeBluetoothConnectionMessage(), true);
 }
 
-async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, signature, showLoading, loadingSignature) {
+async function sendHardwarePersonaAtlasBundle(hardwarePet, packet, revision, signature, showLoading, loadingSignature, forceTransfer = false) {
+  if (!hardwarePet || !hardwarePet.persona) return;
+  const persona = desktopPetPersona(hardwarePet.persona);
+  if (isEmbeddedHardwarePersona(persona) || !persona.spritesheetUrl) return;
+  if (signature && revision !== hardwarePersonaTransferRevision) return;
+  activeHardwarePersonaTransferSignature = signature || "";
+
+  const theme = hardwarePersonaTransferTheme(packet);
+  let atlas;
+  try {
+    atlas = await buildHardwarePersonaAtlas(persona, theme, HARDWARE_PERSONA_STATES);
+  } catch (err) {
+    if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
+    throw err;
+  }
+  if (signature && revision !== hardwarePersonaTransferRevision) {
+    if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
+    return;
+  }
+  const atlasKey = atlas.key;
+  if (!forceTransfer && atlasKey === lastHardwarePersonaImageKey) {
+    if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
+    return;
+  }
+
+  const id = hardwarePersonaTransferId(`${atlasKey}|${revision}`);
+  activeHardwarePersonaTransferId = id;
+  cancelledHardwarePersonaTransferIds.delete(id);
+
+  try {
+    const personaName = clampText(persona.displayName || persona.slug || "", 48);
+    const personaKind = clampText(persona.kind || "", 24);
+    const spriteUrl = hardwareSpriteUrl(persona.spritesheetUrl);
+    const startPayload = {
+      im: "as",
+      id,
+      p: clampText(persona.slug, 48),
+      d: personaName,
+      w: HARDWARE_PERSONA_FRAME_WIDTH,
+      h: HARDWARE_PERSONA_FRAME_HEIGHT,
+      aw: HARDWARE_PERSONA_ATLAS_WIDTH,
+      ah: HARDWARE_PERSONA_ATLAS_HEIGHT,
+      f: atlas.format,
+      z: HARDWARE_PERSONA_ATLAS_BYTES,
+      cols: HARDWARE_PERSONA_ATLAS_COLS,
+      rows: HARDWARE_PERSONA_ATLAS_ROWS,
+      fc: HARDWARE_PERSONA_ATLAS_COLS,
+      sc: HARDWARE_PERSONA_ATLAS_ROWS,
+      st: atlas.states.join(","),
+      ld: showLoading ? 1 : 0,
+      th: theme,
+    };
+    if (personaKind) startPayload.k = personaKind;
+    if (spriteUrl) startPayload.u = spriteUrl;
+    await writeBluetoothJson(startPayload);
+
+    const base64 = bytesToBase64(atlas.bytes);
+    let seq = 0;
+    for (let offset = 0; offset < base64.length; offset += HARDWARE_PERSONA_CHUNK_CHARS) {
+      if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return;
+      await writeBluetoothJson({
+        im: "ac",
+        id,
+        q: seq++,
+        d: base64.slice(offset, offset + HARDWARE_PERSONA_CHUNK_CHARS),
+      });
+      if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return;
+      await sleep(HARDWARE_PERSONA_CHUNK_DELAY_MS);
+    }
+
+    if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return;
+    await writeBluetoothJson({ im: "ae", id });
+    await flushPendingHardwareStatusPacket(revision, signature);
+
+    if (isHardwarePersonaTransferCancelled(id, revision, signature)) return;
+    lastHardwarePersonaImageKey = atlasKey;
+    lastHardwarePersonaLoadingSignature = loadingSignature || "";
+    hardwarePersonaCacheDeviceKey = bluetoothDeviceCacheKey(device);
+  } finally {
+    if (activeHardwarePersonaTransferId === id) activeHardwarePersonaTransferId = "";
+    if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
+    cancelledHardwarePersonaTransferIds.delete(id);
+  }
+}
+
+async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, signature, showLoading, loadingSignature, forceTransfer = false) {
   if (!hardwarePet || !hardwarePet.persona) return;
   const persona = desktopPetPersona(hardwarePet.persona);
   if (isEmbeddedHardwarePersona(persona) || !persona.spritesheetUrl) return;
@@ -2714,7 +2887,7 @@ async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, sig
     return;
   }
   const frameSetKey = bundle.map((entry) => `${entry.state}:${entry.frames.map((frame) => frame.key).join("~")}`).join("||");
-  if (frameSetKey === lastHardwarePersonaImageKey) {
+  if (!forceTransfer && frameSetKey === lastHardwarePersonaImageKey) {
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
     return;
   }
@@ -2795,7 +2968,7 @@ async function sendCurrent(options = {}) {
   const transferSignature = hardwarePersonaTransferSignature(hardwarePet, packet);
   const loadingSignature = hardwarePersonaLoadingSignature(hardwarePet, packet);
   let transferRevision = hardwarePersonaTransferRevision;
-  let shouldSendPersonaFrame = !!transferSignature && !lastHardwarePersonaImageKey;
+  let shouldSendPersonaFrame = !!transferSignature && (ensurePersonaSync || !lastHardwarePersonaImageKey);
   let shouldShowPersonaLoading = !!transferSignature && loadingSignature !== lastHardwarePersonaLoadingSignature;
   if (transferSignature !== latestHardwarePersonaRequestSignature) {
     cancelActiveHardwarePersonaTransfer();
@@ -2818,7 +2991,12 @@ async function sendCurrent(options = {}) {
       transferRevision === hardwarePersonaTransferRevision;
     if (!ensurePersonaSync && sendSequence !== hardwareSendSequence && !personaFrameStillCurrent) return;
     if (ensurePersonaSync && transferSignature && transferRevision !== hardwarePersonaTransferRevision) return;
-    await writeBluetoothJson(packet);
+    const deferInitialStatusPacket = shouldSendPersonaFrame && hardwarePersonaTransferMode() === "atlas";
+    if (deferInitialStatusPacket) {
+      pendingHardwareStatusPacket = packet;
+    } else {
+      await writeBluetoothJson(packet);
+    }
     setConnection(activeBluetoothConnectionMessage(), true);
     personaFrameStillCurrent = shouldSendPersonaFrame && !!transferSignature &&
       transferSignature === latestHardwarePersonaRequestSignature &&
@@ -2827,14 +3005,21 @@ async function sendCurrent(options = {}) {
     if (transferSignature && transferRevision !== hardwarePersonaTransferRevision) return;
     try {
       if (shouldSendPersonaFrame) {
-        await sendHardwarePersonaFrameBundle(
+        const sendPersonaBundle = hardwarePersonaTransferMode() === "atlas"
+          ? sendHardwarePersonaAtlasBundle
+          : sendHardwarePersonaFrameBundle;
+        await sendPersonaBundle(
           hardwarePet,
           packet,
           transferRevision,
           transferSignature,
-          shouldShowPersonaLoading,
-          loadingSignature
+          shouldShowPersonaLoading || ensurePersonaSync,
+          loadingSignature,
+          ensurePersonaSync
         );
+        if (deferInitialStatusPacket) {
+          await flushPendingHardwareStatusPacket(transferRevision, transferSignature);
+        }
       }
     } catch (err) {
       setBluetoothSendFailed(err);

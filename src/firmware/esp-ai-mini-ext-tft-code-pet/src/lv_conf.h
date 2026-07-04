@@ -20,6 +20,7 @@
 
 #define LV_FONT_MONTSERRAT_12 1
 #define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_36 1
 #define LV_FONT_SIMSUN_16_CJK 0
 #define LV_USE_FONT_COMPRESSED 0
 #define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(lv_font_code_pet_cn_16)
@@ -28,5 +29,6 @@
 #define LV_USE_THEME_DEFAULT 1
 #define LV_USE_LABEL 1
 #define LV_USE_IMG 1
+#define LV_USE_BAR 1
 
 #endif

@@ -135,6 +135,55 @@ GET /api/device-snapshot
 
 彩色屏可以根据这些字段选择配色、本地 sprite 或下载的 sprite。OLED 设备可以只显示同样的角色名和状态，并使用本地简化形象。
 
+### 动态图片传输
+
+当选中的角色来自外部精灵图时，桌面端可能会在普通状态包之后追加可选的图片传输包。不支持图片传输的设备应忽略未知的 `im` 包。
+
+Wio 类设备继续使用旧的按状态逐帧传输：
+
+| `im` | 含义 |
+| --- | --- |
+| `s` | 开始传输某个视觉状态的一帧 RGB565 图片。 |
+| `c` | 追加当前帧传输的 base64 数据分片。 |
+| `e` | 结束当前帧传输。 |
+| `x` | 取消当前传输。 |
+
+ESP 彩色屏设备使用单张 atlas 传输。设备只持久化这一张图，并根据当前状态选择对应显示区域：
+
+| `im` | 含义 |
+| --- | --- |
+| `as` | 开始传输 RGB565 atlas。 |
+| `ac` | 追加当前 atlas 传输的 base64 数据分片。 |
+| `ae` | 结束当前 atlas 传输。 |
+| `x` | 取消当前传输。 |
+
+atlas 开始包会包含角色身份和布局信息：
+
+```json
+{
+  "im": "as",
+  "id": "transfer-id",
+  "p": "petdex-slug",
+  "d": "Display name",
+  "k": "petdex",
+  "u": "spritesheet-url",
+  "w": 144,
+  "h": 156,
+  "aw": 288,
+  "ah": 936,
+  "f": "rgb565-rle",
+  "z": 539136,
+  "cols": 2,
+  "rows": 6,
+  "fc": 2,
+  "st": "idle,notification,working,error,thinking,attention",
+  "ld": 1,
+  "th": "day"
+}
+```
+
+`w`/`h` 表示单个帧格子的尺寸，`aw`/`ah` 表示整张 atlas 尺寸，`z` 是解码后的 RGB565 字节数，`f` 可以是 `rgb565` 或 `rgb565-rle`。分片包格式为 `{ "im": "ac", "id": "...", "q": 0, "d": "..." }`，其中 `q` 从 `0` 递增，`d` 是 base64 数据。ESP 彩色屏固件也兼容二进制 atlas 分片实验格式，但桌面 bridge 默认使用更容易在 BLE 上校验的 JSON 分片路径。为了控制存储占用，固件可以在接收 atlas 前先清理旧的动态图片文件；收到 `ae` 后，应将完整的临时 atlas 重命名为当前 atlas 文件。
+
 ## 推荐设备实现
 
 1. 广播 `VibePet-*` 设备名和 service UUID。

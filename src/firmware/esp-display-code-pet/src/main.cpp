@@ -11,6 +11,9 @@
 #endif
 #elif defined(CODE_PET_DISPLAY_ARDUINO_GFX)
 #include <Arduino_GFX_Library.h>
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(ESP32) && CONFIG_IDF_TARGET_ESP32S3
+#include "esp32s3/rom/cache.h"
+#endif
 #if defined(CODE_PET_USE_SENSECAP_INDICATOR)
 #include "Indicator_Extender.h"
 #include "Indicator_SWSPI.h"
@@ -61,6 +64,11 @@
 
 #if defined(CODE_PET_USE_COLOR_LVGL)
 #include <lvgl.h>
+#if LV_FONT_MONTSERRAT_36
+#define CODE_PET_LVGL_PROGRESS_FONT &lv_font_montserrat_36
+#else
+#define CODE_PET_LVGL_PROGRESS_FONT LV_FONT_DEFAULT
+#endif
 #if defined(CODE_PET_DISPLAY_TFT_ESPI)
 class TFT_eSPI;
 extern TFT_eSPI tft;
@@ -103,10 +111,13 @@ extern Arduino_GFX *gfx;
 #define TFT_BACKLIGHT_ON HIGH
 #endif
 #ifndef CODE_PET_ANIMATION_FRAME_MS
-#define CODE_PET_ANIMATION_FRAME_MS 240
+#define CODE_PET_ANIMATION_FRAME_MS 150
 #endif
 #ifndef CODE_PET_ARDUINO_GFX_AUTO_FLUSH
 #define CODE_PET_ARDUINO_GFX_AUTO_FLUSH 1
+#endif
+#ifndef CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+#define CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH 0
 #endif
 
 #define CODE_PET_DISCONNECTED_LABEL "Disconnected"
@@ -135,7 +146,7 @@ struct VibePetPacket {
 
 VibePetPacket pet;
 #ifndef CODE_PET_BLE_PAYLOAD_QUEUE_SIZE
-#define CODE_PET_BLE_PAYLOAD_QUEUE_SIZE 24
+#define CODE_PET_BLE_PAYLOAD_QUEUE_SIZE 64
 #endif
 #ifndef CODE_PET_BLE_FRAGMENT_MAX_BYTES
 #define CODE_PET_BLE_FRAGMENT_MAX_BYTES 768
@@ -190,6 +201,12 @@ static bool displayConnected() {
 #ifndef CODE_PET_LVGL_BUFFER_ROWS
 #define CODE_PET_LVGL_BUFFER_ROWS 20
 #endif
+#ifndef CODE_PET_LVGL_BUFFER_IN_PSRAM
+#define CODE_PET_LVGL_BUFFER_IN_PSRAM 0
+#endif
+#ifndef CODE_PET_LVGL_FALLBACK_BUFFER_ROWS
+#define CODE_PET_LVGL_FALLBACK_BUFFER_ROWS 8
+#endif
 #ifndef CODE_PET_LVGL_IMAGE_BASE_ZOOM
 #define CODE_PET_LVGL_IMAGE_BASE_ZOOM 256
 #endif
@@ -200,8 +217,16 @@ static bool displayConnected() {
 #define CODE_PET_LVGL_PRESCALED_HEIGHT ((CODE_PET_DYNAMIC_PERSONA_HEIGHT * CODE_PET_LVGL_IMAGE_BASE_ZOOM) / 256)
 #define CODE_PET_LVGL_PRESCALED_BYTES (CODE_PET_LVGL_PRESCALED_WIDTH * CODE_PET_LVGL_PRESCALED_HEIGHT * 2)
 static lv_disp_draw_buf_t lvDrawBuffer;
+#if CODE_PET_LVGL_BUFFER_IN_PSRAM && defined(ESP32)
+static lv_color_t *lvBufferA = nullptr;
+static lv_color_t *lvBufferB = nullptr;
+static lv_color_t lvFallbackBufferA[CP_TFT_WIDTH * CODE_PET_LVGL_FALLBACK_BUFFER_ROWS];
+static lv_color_t lvFallbackBufferB[CP_TFT_WIDTH * CODE_PET_LVGL_FALLBACK_BUFFER_ROWS];
+static uint32_t lvDrawBufferPixels = 0;
+#else
 static lv_color_t lvBufferA[CP_TFT_WIDTH * CODE_PET_LVGL_BUFFER_ROWS];
 static lv_color_t lvBufferB[CP_TFT_WIDTH * CODE_PET_LVGL_BUFFER_ROWS];
+#endif
 static lv_disp_drv_t lvDisplayDriver;
 static lv_obj_t *lvRoot = nullptr;
 static lv_obj_t *lvHeader = nullptr;
@@ -248,6 +273,11 @@ static String lvLoadPercentTextCache = "";
 static String lvFallbackPersonaTextCache = "";
 static String lvFallbackStateTextCache = "";
 static String lvFallbackAgentTextCache = "";
+#if defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+static lv_area_t lvFlushDirtyArea;
+static bool lvFlushDirtyAreaValid = false;
+static bool lvForceFullFlush = false;
+#endif
 
 #if CODE_PET_LVGL_PRESCALE_IMAGE && defined(ESP32)
 static uint8_t *lvPrescaledPixels[2] = {nullptr, nullptr};
@@ -309,10 +339,13 @@ static String dynamicPersonaTransferSlug = "";
 static String dynamicPersonaTransferState = "idle";
 static bool dynamicPersonaReady = false;
 static bool dynamicPersonaReceiving = false;
+static bool dynamicPersonaAtlasReceiving = false;
+static bool dynamicPersonaAtlasReady = false;
 static bool dynamicPersonaShowLoading = true;
 static DynamicPersonaFormat dynamicPersonaFormat = DYNAMIC_PERSONA_RAW_RGB565;
 static uint16_t dynamicPersonaExpectedSeq = 0;
 static uint32_t dynamicPersonaReceived = 0;
+static uint32_t dynamicPersonaTransferExpectedBytes = 0;
 static uint8_t dynamicPersonaFrameCount = 1;
 static uint8_t dynamicPersonaTransferFrameCount = 1;
 static uint8_t dynamicPersonaTransferFrameIndex = 0;
@@ -320,6 +353,11 @@ static uint8_t dynamicPersonaReceivedFrameMask = 0;
 static uint8_t dynamicPersonaLastProgressPercent = 0;
 static uint8_t dynamicPersonaRleTriple[3] = {0, 0, 0};
 static uint8_t dynamicPersonaRleIndex = 0;
+static uint16_t dynamicPersonaAtlasWidth = 0;
+static uint16_t dynamicPersonaAtlasHeight = 0;
+static uint8_t dynamicPersonaAtlasCols = 0;
+static uint8_t dynamicPersonaAtlasRows = 0;
+static uint8_t dynamicPersonaAtlasFrameCount = 1;
 static const char *DYNAMIC_PERSONA_STATE_NAMES[CODE_PET_DYNAMIC_PERSONA_STATE_COUNT] = {
   "idle", "notification", "working", "error", "thinking", "attention"
 };
@@ -331,6 +369,11 @@ static uint8_t dynamicPersonaCachedFrameCounts[CODE_PET_DYNAMIC_PERSONA_STATE_CO
 static bool dynamicPersonaStoreMounted = false;
 static const char *DYNAMIC_PERSONA_META_PATH = "/pet_meta.json";
 static const char *DYNAMIC_PERSONA_META_TMP_PATH = "/pet_meta.tmp";
+static const char *DYNAMIC_PERSONA_ATLAS_PATH = "/pet_atlas.bin";
+static const char *DYNAMIC_PERSONA_ATLAS_TMP_PATH = "/pet_atlas.tmp";
+static fs::File dynamicPersonaAtlasWriteFile;
+static uint8_t dynamicPersonaAtlasWriteBuffer[1024];
+static uint16_t dynamicPersonaAtlasWriteBufferSize = 0;
 #endif
 #endif
 
@@ -535,6 +578,11 @@ static void setLvHidden(lv_obj_t *obj, bool hidden) {
   }
 }
 
+static void setPremiumLabelHidden(lv_obj_t *label, lv_obj_t *shadow, bool hidden) {
+  setLvHidden(label, hidden);
+  setLvHidden(shadow, hidden);
+}
+
 static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uint16_t muted,
                                   uint16_t accent, uint16_t labelInk, uint16_t labelMuted,
                                   uint16_t loadPanelBg, uint16_t loadTrackBg) {
@@ -554,10 +602,10 @@ static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uin
   if (first || lvStyleAccent != accent) {
     stylePremiumLabel(lvStatus, accent);
     stylePremiumShadow(lvStatusShadow, accent, LV_OPA_40);
-    stylePremiumLabel(lvLoadPercent, accent);
-    stylePremiumShadow(lvLoadPercentShadow, accent, LV_OPA_50);
+    stylePremiumLabel(lvLoadPercent, labelInk);
+    stylePremiumShadow(lvLoadPercentShadow, labelInk, LV_OPA_0);
     lv_obj_set_style_border_color(lvLoadPanel, lvColor(accent), 0);
-    lv_obj_set_style_bg_color(lvLoadFill, lvColor(accent), 0);
+    lv_obj_set_style_bg_color(lvLoadTrack, lvColor(accent), LV_PART_INDICATOR);
     lv_obj_set_style_text_color(lvFallbackState, lvColor(accent), 0);
     lvStyleAccent = accent;
   }
@@ -571,7 +619,7 @@ static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uin
     lvStyleLoadPanelBg = loadPanelBg;
   }
   if (first || lvStyleLoadTrackBg != loadTrackBg) {
-    lv_obj_set_style_bg_color(lvLoadTrack, lvColor(loadTrackBg), 0);
+    lv_obj_set_style_bg_color(lvLoadTrack, lvColor(loadTrackBg), LV_PART_MAIN);
     lvStyleLoadTrackBg = loadTrackBg;
   }
   if (first || lvStylePanel != panel) {
@@ -593,6 +641,59 @@ static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uin
 #if CODE_PET_LVGL_TFT_SWAP_RB
 static uint16_t swapRgb565RedBlue(uint16_t color) {
   return ((color & 0xF800) >> 11) | (color & 0x07E0) | ((color & 0x001F) << 11);
+}
+#endif
+
+#if defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+static bool flushFullLvFramebuffer() {
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(ESP32) && CONFIG_IDF_TARGET_ESP32S3 && CP_TFT_ROTATION == 0
+  Arduino_RGB_Display *rgb = static_cast<Arduino_RGB_Display *>(gfx);
+  uint16_t *framebuffer = rgb ? rgb->getFramebuffer() : nullptr;
+  if (!framebuffer) return false;
+  Cache_WriteBack_Addr(reinterpret_cast<uint32_t>(framebuffer),
+                       static_cast<uint32_t>(CP_TFT_WIDTH) * CP_TFT_HEIGHT * sizeof(uint16_t));
+  return true;
+#else
+  return false;
+#endif
+}
+
+static void rememberLvFlushArea(const lv_area_t *area) {
+  if (!area) return;
+  if (!lvFlushDirtyAreaValid) {
+    lvFlushDirtyArea = *area;
+    lvFlushDirtyAreaValid = true;
+    return;
+  }
+  if (area->x1 < lvFlushDirtyArea.x1) lvFlushDirtyArea.x1 = area->x1;
+  if (area->y1 < lvFlushDirtyArea.y1) lvFlushDirtyArea.y1 = area->y1;
+  if (area->x2 > lvFlushDirtyArea.x2) lvFlushDirtyArea.x2 = area->x2;
+  if (area->y2 > lvFlushDirtyArea.y2) lvFlushDirtyArea.y2 = area->y2;
+}
+
+static bool flushRememberedLvArea() {
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(ESP32) && CONFIG_IDF_TARGET_ESP32S3 && CP_TFT_ROTATION == 0
+  if (!lvFlushDirtyAreaValid) return false;
+  lv_area_t area = lvFlushDirtyArea;
+  lvFlushDirtyAreaValid = false;
+  if (area.x2 < 0 || area.y2 < 0 || area.x1 >= CP_TFT_WIDTH || area.y1 >= CP_TFT_HEIGHT) return true;
+  if (area.x1 < 0) area.x1 = 0;
+  if (area.y1 < 0) area.y1 = 0;
+  if (area.x2 >= CP_TFT_WIDTH) area.x2 = CP_TFT_WIDTH - 1;
+  if (area.y2 >= CP_TFT_HEIGHT) area.y2 = CP_TFT_HEIGHT - 1;
+  const uint16_t width = area.x2 - area.x1 + 1;
+  const uint16_t height = area.y2 - area.y1 + 1;
+  Arduino_RGB_Display *rgb = static_cast<Arduino_RGB_Display *>(gfx);
+  uint16_t *framebuffer = rgb ? rgb->getFramebuffer() : nullptr;
+  if (!framebuffer) return false;
+  uint16_t *start = framebuffer + static_cast<uint32_t>(area.y1) * CP_TFT_WIDTH + area.x1;
+  const uint32_t bytes = (static_cast<uint32_t>(CP_TFT_WIDTH) * (height - 1) + width) * sizeof(uint16_t);
+  Cache_WriteBack_Addr(reinterpret_cast<uint32_t>(start), bytes);
+  return true;
+#else
+  lvFlushDirtyAreaValid = false;
+  return false;
+#endif
 }
 #endif
 
@@ -618,10 +719,49 @@ static void lvFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
   gfx->draw16bitRGBBitmap(area->x1, area->y1, pixels, width, height);
 #endif
 #if !CODE_PET_ARDUINO_GFX_AUTO_FLUSH
-  gfx->flush();
+#if CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+  rememberLvFlushArea(area);
+  if (lv_disp_flush_is_last(disp)) {
+    if (lvForceFullFlush) {
+      lvFlushDirtyAreaValid = false;
+      if (!flushFullLvFramebuffer()) gfx->flush();
+    } else if (!flushRememberedLvArea()) {
+      gfx->flush();
+    }
+  }
+#else
+  if (lv_disp_flush_is_last(disp)) gfx->flush();
+#endif
 #endif
 #endif
   lv_disp_flush_ready(disp);
+}
+
+static uint32_t prepareLvDrawBufferPixels() {
+#if CODE_PET_LVGL_BUFFER_IN_PSRAM && defined(ESP32)
+  if (lvDrawBufferPixels) return lvDrawBufferPixels;
+
+  const uint32_t requestedPixels = static_cast<uint32_t>(CP_TFT_WIDTH) * CODE_PET_LVGL_BUFFER_ROWS;
+  const size_t requestedBytes = static_cast<size_t>(requestedPixels) * sizeof(lv_color_t);
+  lv_color_t *bufferA = static_cast<lv_color_t *>(heap_caps_malloc(requestedBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  lv_color_t *bufferB = static_cast<lv_color_t *>(heap_caps_malloc(requestedBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+  if (bufferA && bufferB) {
+    lvBufferA = bufferA;
+    lvBufferB = bufferB;
+    lvDrawBufferPixels = requestedPixels;
+    return lvDrawBufferPixels;
+  }
+
+  if (bufferA) heap_caps_free(bufferA);
+  if (bufferB) heap_caps_free(bufferB);
+  lvBufferA = lvFallbackBufferA;
+  lvBufferB = lvFallbackBufferB;
+  lvDrawBufferPixels = sizeof(lvFallbackBufferA) / sizeof(lvFallbackBufferA[0]);
+  return lvDrawBufferPixels;
+#else
+  return sizeof(lvBufferA) / sizeof(lvBufferA[0]);
+#endif
 }
 
 static void ensureLvglUi();
@@ -664,7 +804,8 @@ static void displayBegin() {
   tft.setRotation(CP_TFT_ROTATION);
 #if defined(CODE_PET_USE_LVGL)
   lv_init();
-  lv_disp_draw_buf_init(&lvDrawBuffer, lvBufferA, lvBufferB, sizeof(lvBufferA) / sizeof(lvBufferA[0]));
+  uint32_t drawBufferPixels = prepareLvDrawBufferPixels();
+  lv_disp_draw_buf_init(&lvDrawBuffer, lvBufferA, lvBufferB, drawBufferPixels);
   lv_disp_drv_init(&lvDisplayDriver);
   lvDisplayDriver.hor_res = screenW();
   lvDisplayDriver.ver_res = screenH();
@@ -738,7 +879,8 @@ static void displayBegin() {
   gfx->setRotation(CP_TFT_ROTATION);
 #if defined(CODE_PET_USE_COLOR_LVGL)
   lv_init();
-  lv_disp_draw_buf_init(&lvDrawBuffer, lvBufferA, lvBufferB, sizeof(lvBufferA) / sizeof(lvBufferA[0]));
+  uint32_t drawBufferPixels = prepareLvDrawBufferPixels();
+  lv_disp_draw_buf_init(&lvDrawBuffer, lvBufferA, lvBufferB, drawBufferPixels);
   lv_disp_drv_init(&lvDisplayDriver);
   lvDisplayDriver.hor_res = screenW();
   lvDisplayDriver.ver_res = screenH();
@@ -919,6 +1061,20 @@ static String dynamicPersonaVisualState(const String &state) {
   return clean;
 }
 
+static bool dynamicPersonaLoadingFor(const String &slug, const String &visualState) {
+  if (!displayConnected() || !dynamicPersonaReceiving || !dynamicPersonaTransferSlug.length()) return false;
+  if (dynamicPersonaAtlasReceiving) return true;
+  return dynamicPersonaTransferSlug == slug && dynamicPersonaTransferState == visualState;
+}
+
+static bool dynamicPersonaLoadingCurrent() {
+  if (!dynamicPersonaReceiving || !displayConnected()) return false;
+  const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
+  String slug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
+  String visualState = dynamicPersonaVisualState(normalizePacketState(pet.state));
+  return dynamicPersonaLoadingFor(slug, visualState);
+}
+
 static int8_t dynamicPersonaStateIndex(const String &state) {
   String visual = dynamicPersonaVisualState(state);
   for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) {
@@ -1010,6 +1166,28 @@ static bool ensureLvPrescaleBuffers() {
   return true;
 }
 
+static uint16_t blendRgb565(uint16_t c00, uint16_t c10, uint16_t c01, uint16_t c11, uint16_t wx, uint16_t wy) {
+  const uint16_t ix = 256U - wx;
+  const uint16_t iy = 256U - wy;
+  const uint32_t w00 = static_cast<uint32_t>(ix) * iy;
+  const uint32_t w10 = static_cast<uint32_t>(wx) * iy;
+  const uint32_t w01 = static_cast<uint32_t>(ix) * wy;
+  const uint32_t w11 = static_cast<uint32_t>(wx) * wy;
+  const uint32_t r = ((((c00 >> 11) & 0x1F) * w00) +
+                      (((c10 >> 11) & 0x1F) * w10) +
+                      (((c01 >> 11) & 0x1F) * w01) +
+                      (((c11 >> 11) & 0x1F) * w11) + 32768U) >> 16;
+  const uint32_t g = ((((c00 >> 5) & 0x3F) * w00) +
+                      (((c10 >> 5) & 0x3F) * w10) +
+                      (((c01 >> 5) & 0x3F) * w01) +
+                      (((c11 >> 5) & 0x3F) * w11) + 32768U) >> 16;
+  const uint32_t b = (((c00 & 0x1F) * w00) +
+                      ((c10 & 0x1F) * w10) +
+                      ((c01 & 0x1F) * w01) +
+                      ((c11 & 0x1F) * w11) + 32768U) >> 16;
+  return static_cast<uint16_t>((r << 11) | (g << 5) | b);
+}
+
 static bool prepareLvPrescaledImage(uint8_t slot, const lv_img_dsc_t *frame) {
   if (slot >= 2 || !frame || !frame->data || !ensureLvPrescaleBuffers()) return false;
   if (frame->header.w != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
@@ -1020,12 +1198,23 @@ static bool prepareLvPrescaledImage(uint8_t slot, const lv_img_dsc_t *frame) {
   const uint16_t *src = reinterpret_cast<const uint16_t *>(frame->data);
   uint16_t *dst = reinterpret_cast<uint16_t *>(lvPrescaledPixels[slot]);
   for (uint16_t y = 0; y < CODE_PET_LVGL_PRESCALED_HEIGHT; y++) {
-    const uint16_t sy = (static_cast<uint32_t>(y) * CODE_PET_DYNAMIC_PERSONA_HEIGHT) / CODE_PET_LVGL_PRESCALED_HEIGHT;
-    const uint16_t *srcRow = src + static_cast<uint32_t>(sy) * CODE_PET_DYNAMIC_PERSONA_WIDTH;
+    const uint32_t syFixed = CODE_PET_LVGL_PRESCALED_HEIGHT > 1
+      ? (static_cast<uint32_t>(y) * (CODE_PET_DYNAMIC_PERSONA_HEIGHT - 1) * 256U) / (CODE_PET_LVGL_PRESCALED_HEIGHT - 1)
+      : 0;
+    const uint16_t sy = syFixed >> 8;
+    const uint16_t sy1 = sy + 1 < CODE_PET_DYNAMIC_PERSONA_HEIGHT ? sy + 1 : sy;
+    const uint16_t wy = syFixed & 0xFF;
+    const uint16_t *srcRow0 = src + static_cast<uint32_t>(sy) * CODE_PET_DYNAMIC_PERSONA_WIDTH;
+    const uint16_t *srcRow1 = src + static_cast<uint32_t>(sy1) * CODE_PET_DYNAMIC_PERSONA_WIDTH;
     uint16_t *dstRow = dst + static_cast<uint32_t>(y) * CODE_PET_LVGL_PRESCALED_WIDTH;
     for (uint16_t x = 0; x < CODE_PET_LVGL_PRESCALED_WIDTH; x++) {
-      const uint16_t sx = (static_cast<uint32_t>(x) * CODE_PET_DYNAMIC_PERSONA_WIDTH) / CODE_PET_LVGL_PRESCALED_WIDTH;
-      dstRow[x] = srcRow[sx];
+      const uint32_t sxFixed = CODE_PET_LVGL_PRESCALED_WIDTH > 1
+        ? (static_cast<uint32_t>(x) * (CODE_PET_DYNAMIC_PERSONA_WIDTH - 1) * 256U) / (CODE_PET_LVGL_PRESCALED_WIDTH - 1)
+        : 0;
+      const uint16_t sx = sxFixed >> 8;
+      const uint16_t sx1 = sx + 1 < CODE_PET_DYNAMIC_PERSONA_WIDTH ? sx + 1 : sx;
+      const uint16_t wx = sxFixed & 0xFF;
+      dstRow[x] = blendRgb565(srcRow0[sx], srcRow0[sx1], srcRow1[sx], srcRow1[sx1], wx, wy);
     }
   }
   lv_img_cache_invalidate_src(&lvPrescaledImages[slot]);
@@ -1158,9 +1347,11 @@ static void ensureLvglUi() {
   const int16_t footerWidth = sw > 16 ? sw - 16 : sw;
   const int16_t fallbackWidth = sw >= 200 ? 170 : sw - 24;
   const int16_t fallbackContentWidth = fallbackWidth > 24 ? fallbackWidth - 24 : fallbackWidth;
-  const int16_t loadPanelWidth = sw >= 190 ? 164 : sw - 24;
-  const int16_t loadTrackWidth = loadPanelWidth > 16 ? loadPanelWidth - 16 : loadPanelWidth;
-  const int16_t loadTitleWidth = loadPanelWidth > 120 ? loadPanelWidth - 72 : loadPanelWidth / 2;
+  const int16_t loadPanelWidth = sw;
+  const int16_t loadPanelHeight = screenH();
+  const int16_t loadTrackWidth = sw > 64 ? sw - 64 : sw - 24;
+  const int16_t loadTrackHeight = sw >= 240 ? 10 : 8;
+  const int16_t loadTitleWidth = sw > 32 ? sw - 32 : sw;
 
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
   lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
@@ -1189,6 +1380,7 @@ static void ensureLvglUi() {
   lv_label_set_long_mode(lvHeader, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_font(lvHeader, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvHeader, LV_ALIGN_TOP_LEFT, 8, 6);
+  setPremiumLabelText(lvHeader, lvHeaderShadow, "");
 
   lvStatusShadow = lv_label_create(lvRoot);
   lv_obj_set_width(lvStatusShadow, statusWidth);
@@ -1203,6 +1395,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_text_align(lvStatus, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_font(lvStatus, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvStatus, LV_ALIGN_TOP_RIGHT, -8, 6);
+  setPremiumLabelText(lvStatus, lvStatusShadow, "");
 
   lvFooterClip = lv_obj_create(lvRoot);
   lv_obj_remove_style_all(lvFooterClip);
@@ -1221,6 +1414,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_LEFT, 0);
   lv_obj_set_style_text_font(lvFooter, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFooter, LV_ALIGN_LEFT_MID, 0, 0);
+  setPremiumLabelText(lvFooter, lvFooterShadow, "");
 
   lvFallback = lv_obj_create(lvRoot);
   lv_obj_set_size(lvFallback, fallbackWidth, 108);
@@ -1236,6 +1430,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_text_align(lvFallbackPersona, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvFallbackPersona, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFallbackPersona, LV_ALIGN_TOP_MID, 0, 10);
+  lv_label_set_text(lvFallbackPersona, "");
 
   lvFallbackState = lv_label_create(lvFallback);
   lv_obj_set_width(lvFallbackState, fallbackContentWidth);
@@ -1243,6 +1438,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_text_align(lvFallbackState, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvFallbackState, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFallbackState, LV_ALIGN_CENTER, 0, 0);
+  lv_label_set_text(lvFallbackState, "");
 
   lvFallbackAgent = lv_label_create(lvFallback);
   lv_obj_set_width(lvFallbackAgent, fallbackContentWidth);
@@ -1250,15 +1446,16 @@ static void ensureLvglUi() {
   lv_obj_set_style_text_align(lvFallbackAgent, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvFallbackAgent, LV_FONT_DEFAULT, 0);
   lv_obj_align(lvFallbackAgent, LV_ALIGN_BOTTOM_MID, 0, -12);
+  lv_label_set_text(lvFallbackAgent, "");
 
   lvLoadPanel = lv_obj_create(lvRoot);
-  lv_obj_set_size(lvLoadPanel, loadPanelWidth, 56);
-  lv_obj_align(lvLoadPanel, LV_ALIGN_CENTER, 0, 48);
-  lv_obj_set_style_radius(lvLoadPanel, 10, 0);
-  lv_obj_set_style_border_width(lvLoadPanel, 1, 0);
-  lv_obj_set_style_pad_all(lvLoadPanel, 8, 0);
+  lv_obj_set_size(lvLoadPanel, loadPanelWidth, loadPanelHeight);
+  lv_obj_align(lvLoadPanel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_radius(lvLoadPanel, 0, 0);
+  lv_obj_set_style_border_width(lvLoadPanel, 0, 0);
+  lv_obj_set_style_pad_all(lvLoadPanel, 0, 0);
   lv_obj_set_style_shadow_width(lvLoadPanel, 0, 0);
-  lv_obj_set_style_bg_opa(lvLoadPanel, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_opa(lvLoadPanel, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(lvLoadPanel, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
 
@@ -1266,57 +1463,65 @@ static void ensureLvglUi() {
   lv_obj_set_width(lvLoadTitleShadow, loadTitleWidth);
   lv_label_set_long_mode(lvLoadTitleShadow, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_font(lvLoadTitleShadow, LV_FONT_DEFAULT, 0);
-  lv_obj_align(lvLoadTitleShadow, LV_ALIGN_TOP_LEFT, 1, 0);
+  lv_obj_align(lvLoadTitleShadow, LV_ALIGN_CENTER, 1, -48);
+  lv_obj_add_flag(lvLoadTitleShadow, LV_OBJ_FLAG_HIDDEN);
 
   lvLoadTitle = lv_label_create(lvLoadPanel);
   lv_obj_set_width(lvLoadTitle, loadTitleWidth);
   lv_label_set_long_mode(lvLoadTitle, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_font(lvLoadTitle, LV_FONT_DEFAULT, 0);
-  lv_obj_align(lvLoadTitle, LV_ALIGN_TOP_LEFT, 0, -1);
+  lv_obj_align(lvLoadTitle, LV_ALIGN_CENTER, 0, -49);
+  lv_obj_add_flag(lvLoadTitle, LV_OBJ_FLAG_HIDDEN);
+  setPremiumLabelText(lvLoadTitle, lvLoadTitleShadow, "");
 
   lvLoadPercentShadow = lv_label_create(lvLoadPanel);
-  lv_obj_set_width(lvLoadPercentShadow, 46);
+  lv_obj_set_width(lvLoadPercentShadow, sw);
   lv_label_set_long_mode(lvLoadPercentShadow, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(lvLoadPercentShadow, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_set_style_text_font(lvLoadPercentShadow, LV_FONT_DEFAULT, 0);
-  lv_obj_align(lvLoadPercentShadow, LV_ALIGN_TOP_RIGHT, 1, 0);
+  lv_obj_set_style_text_align(lvLoadPercentShadow, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(lvLoadPercentShadow, CODE_PET_LVGL_PROGRESS_FONT, 0);
+  lv_obj_align(lvLoadPercentShadow, LV_ALIGN_CENTER, 0, -6);
+  lv_obj_add_flag(lvLoadPercentShadow, LV_OBJ_FLAG_HIDDEN);
 
   lvLoadPercent = lv_label_create(lvLoadPanel);
-  lv_obj_set_width(lvLoadPercent, 46);
+  lv_obj_set_width(lvLoadPercent, sw);
   lv_label_set_long_mode(lvLoadPercent, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(lvLoadPercent, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_set_style_text_font(lvLoadPercent, LV_FONT_DEFAULT, 0);
-  lv_obj_align(lvLoadPercent, LV_ALIGN_TOP_RIGHT, 0, -1);
+  lv_obj_set_style_text_align(lvLoadPercent, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(lvLoadPercent, CODE_PET_LVGL_PROGRESS_FONT, 0);
+  lv_obj_set_style_text_opa(lvLoadPercent, LV_OPA_90, 0);
+  lv_obj_align(lvLoadPercent, LV_ALIGN_CENTER, 0, -8);
+  setPremiumLabelText(lvLoadPercent, lvLoadPercentShadow, "");
 
-  lvLoadTrack = lv_obj_create(lvLoadPanel);
-  lv_obj_set_size(lvLoadTrack, loadTrackWidth, 8);
-  lv_obj_align(lvLoadTrack, LV_ALIGN_BOTTOM_MID, 0, 0);
-  lv_obj_set_style_radius(lvLoadTrack, 4, 0);
-  lv_obj_set_style_border_width(lvLoadTrack, 0, 0);
-  lv_obj_set_style_pad_all(lvLoadTrack, 0, 0);
-  lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, 0);
+  lvLoadTrack = lv_bar_create(lvLoadPanel);
+  lv_obj_set_size(lvLoadTrack, loadTrackWidth, loadTrackHeight);
+  lv_obj_align(lvLoadTrack, LV_ALIGN_BOTTOM_MID, 0, -32);
+  lv_bar_set_range(lvLoadTrack, 0, 100);
+  lv_bar_set_value(lvLoadTrack, 0, LV_ANIM_OFF);
+  lv_obj_set_style_radius(lvLoadTrack, loadTrackHeight / 2, LV_PART_MAIN);
+  lv_obj_set_style_radius(lvLoadTrack, loadTrackHeight / 2, LV_PART_INDICATOR);
+  lv_obj_set_style_border_width(lvLoadTrack, 0, LV_PART_MAIN);
+  lv_obj_set_style_border_width(lvLoadTrack, 0, LV_PART_INDICATOR);
+  lv_obj_set_style_pad_all(lvLoadTrack, 0, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, LV_PART_INDICATOR);
   lv_obj_clear_flag(lvLoadTrack, LV_OBJ_FLAG_SCROLLABLE);
-
-  lvLoadFill = lv_obj_create(lvLoadTrack);
-  lv_obj_set_size(lvLoadFill, 1, 8);
-  lv_obj_align(lvLoadFill, LV_ALIGN_LEFT_MID, 0, 0);
-  lv_obj_set_style_radius(lvLoadFill, 4, 0);
-  lv_obj_set_style_border_width(lvLoadFill, 0, 0);
-  lv_obj_set_style_pad_all(lvLoadFill, 0, 0);
-  lv_obj_set_style_bg_opa(lvLoadFill, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(lvLoadFill, LV_OBJ_FLAG_SCROLLABLE);
+  lvLoadFill = nullptr;
 }
 
 static uint8_t dynamicPersonaProgressPercent() {
   if (!dynamicPersonaReceiving && dynamicPersonaReady) return 100;
   uint8_t completeFrames = 0;
-  for (uint8_t i = 0; i < dynamicPersonaTransferFrameCount; i++) {
-    if (dynamicPersonaReceivedFrameMask & (1U << i)) completeFrames++;
+  if (!dynamicPersonaAtlasReceiving) {
+    for (uint8_t i = 0; i < dynamicPersonaTransferFrameCount && i < 8; i++) {
+      if (dynamicPersonaReceivedFrameMask & (1U << i)) completeFrames++;
+    }
   }
-  uint32_t total = static_cast<uint32_t>(dynamicPersonaTransferFrameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  uint32_t total = dynamicPersonaTransferExpectedBytes;
+  if (!total) total = static_cast<uint32_t>(dynamicPersonaTransferFrameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
   uint32_t received = dynamicPersonaReceived;
-  if (received > CODE_PET_DYNAMIC_PERSONA_BYTES) received = CODE_PET_DYNAMIC_PERSONA_BYTES;
-  received += static_cast<uint32_t>(completeFrames) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  if (!dynamicPersonaAtlasReceiving) {
+    if (received > CODE_PET_DYNAMIC_PERSONA_BYTES) received = CODE_PET_DYNAMIC_PERSONA_BYTES;
+    received += static_cast<uint32_t>(completeFrames) * CODE_PET_DYNAMIC_PERSONA_BYTES;
+  }
   if (total == 0) return 0;
   if (received > total) received = total;
   return static_cast<uint8_t>((received * 100U) / total);
@@ -1356,6 +1561,10 @@ static void updateFooterTicker(const String &text, bool connected) {
   }
 
   if (!text.length()) {
+    if (!lvFooterDisconnectedMode && !lvFooterTickerText.length() && lvFooterTickerDone) {
+      setLvHidden(lvFooterClip, true);
+      return;
+    }
     lv_anim_del(lvFooter, setFooterTickerX);
     lvFooterDisconnectedMode = false;
     lvFooterTickerText = "";
@@ -1416,30 +1625,37 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   String renderSlug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
   String renderState = normalizePacketState(connected ? pet.state : String("idle"));
   String renderVisualState = dynamicPersonaVisualState(renderState);
-  const bool imageLoading = connected && dynamicPersonaReceiving && dynamicPersonaShowLoading &&
-                            dynamicPersonaTransferSlug == renderSlug &&
-                            dynamicPersonaTransferState == renderVisualState;
+  const bool imageLoading = dynamicPersonaLoadingFor(renderSlug, renderVisualState);
   const uint8_t imageProgress = imageLoading ? dynamicPersonaProgressPercent() : 0;
-  const lv_img_dsc_t *frame = dynamicPersonaFrameForSlug(renderSlug, renderState);
-  bool frameUsesCurrentPersona = frame != nullptr;
-  if (!frame) {
-    frame = codePetPersonaFrame(renderSlug, renderState, frameIndex);
+  const lv_img_dsc_t *frame = nullptr;
+  bool frameUsesCurrentPersona = false;
+  if (!imageLoading) {
+    frame = dynamicPersonaFrameForSlug(renderSlug, renderState);
     frameUsesCurrentPersona = frame != nullptr;
+    if (!frame) {
+      frame = codePetPersonaFrame(renderSlug, renderState, frameIndex);
+      frameUsesCurrentPersona = frame != nullptr;
+    }
+    if (!frame && connected) {
+      frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
+      frameUsesCurrentPersona = false;
+    }
+    if (!frame && !connected && dynamicPersonaReady) {
+      frame = dynamicPersonaFrameForSlug(dynamicPersonaSlug, dynamicPersonaState);
+      frameUsesCurrentPersona = frame != nullptr;
+    }
+    if (!frame) {
+      frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
+      frameUsesCurrentPersona = false;
+    }
   }
-  if (!frame && connected) {
-    frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
-    frameUsesCurrentPersona = false;
+  const bool showFallbackPanel = !imageLoading && frame == nullptr;
+  if (showFallbackPanel && !connected && !pet.personaSlug.length()) {
+#if defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+    lvForceFullFlush = false;
+#endif
+    return false;
   }
-  if (!frame && !connected && dynamicPersonaReady) {
-    frame = dynamicPersonaFrameForSlug(dynamicPersonaSlug, dynamicPersonaState);
-    frameUsesCurrentPersona = frame != nullptr;
-  }
-  if (!frame) {
-    frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
-    frameUsesCurrentPersona = false;
-  }
-  const bool showFallbackPanel = frame == nullptr;
-  if (showFallbackPanel && !connected && !pet.personaSlug.length()) return false;
 
   const bool night = isNightTheme();
   const uint16_t labelInk = night ? rgb565(255, 255, 255) : rgb565(30, 40, 54);
@@ -1447,24 +1663,36 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   const uint16_t loadPanelBg = night ? rgb565(8, 10, 14) : panel;
   const uint16_t loadTrackBg = night ? rgb565(36, 42, 54) : rgb565(224, 230, 238);
   updateLvPersonaStyles(bg, panel, ink, muted, accent, labelInk, labelMuted, loadPanelBg, loadTrackBg);
+#if defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+  lvForceFullFlush = imageLoading;
+#endif
+
+  if (imageLoading) {
+    setPremiumLabelHidden(lvHeader, lvHeaderShadow, true);
+    setPremiumLabelHidden(lvStatus, lvStatusShadow, true);
+    updateFooterTicker(String(""), connected);
+    hideLvPersonaImages();
+    setLvHidden(lvFallback, true);
+    setPremiumLabelHidden(lvLoadTitle, lvLoadTitleShadow, true);
+    setLvHidden(lvLoadPercentShadow, true);
+
+    String progressText = String(imageProgress) + "%";
+    setPremiumLabelTextIfChanged(lvLoadPercent, lvLoadPercentShadow, lvLoadPercentTextCache, progressText);
+    lv_bar_set_value(lvLoadTrack, imageProgress, LV_ANIM_OFF);
+    setLvHidden(lvLoadPanel, false);
+    return true;
+  }
+
+  setPremiumLabelHidden(lvHeader, lvHeaderShadow, false);
+  setPremiumLabelHidden(lvStatus, lvStatusShadow, false);
+  setLvHidden(lvLoadPanel, true);
+
   String headerText = connected ? cleanText(pet.agent, 22) : "";
   setPremiumLabelTextIfChanged(lvHeader, lvHeaderShadow, lvHeaderTextCache, headerText);
-  String statusText = connected ? cleanText(imageLoading ? String("Sync ") + String(imageProgress) + "%" : displayStateLabel(), 20) : "";
+  String statusText = connected ? cleanText(imageLoading ? String("Syncing") : displayStateLabel(), 20) : "";
   setPremiumLabelTextIfChanged(lvStatus, lvStatusShadow, lvStatusTextCache, statusText);
   String footer = connected ? cleanText(pet.output, CODE_PET_OUTPUT_MAX_CHARS) : String(CODE_PET_DISCONNECTED_LABEL);
   updateFooterTicker(footer, connected);
-  if (imageLoading) {
-    String progressText = String(imageProgress) + "%";
-    setPremiumLabelTextIfChanged(lvLoadTitle, lvLoadTitleShadow, lvLoadTitleTextCache, String("Syncing"));
-    setPremiumLabelTextIfChanged(lvLoadPercent, lvLoadPercentShadow, lvLoadPercentTextCache, progressText);
-    const int16_t trackWidth = lv_obj_get_width(lvLoadTrack);
-    int16_t fillWidth = (trackWidth * imageProgress) / 100;
-    if (fillWidth < 1) fillWidth = 1;
-    if (lv_obj_get_width(lvLoadFill) != fillWidth) lv_obj_set_width(lvLoadFill, fillWidth);
-    setLvHidden(lvLoadPanel, false);
-  } else {
-    setLvHidden(lvLoadPanel, true);
-  }
 
   String fallbackPersona = connected ? cleanText(pet.personaName, 18) : String(CODE_PET_DISCONNECTED_LABEL);
   setLabelTextIfChanged(lvFallbackPersona, lvFallbackPersonaTextCache, fallbackPersona);
@@ -1874,6 +2102,11 @@ static void markDirty() {
 
 #if defined(CODE_PET_USE_COLOR_LVGL)
 static const lv_img_dsc_t *dynamicPersonaFrameForSlug(const String &slug, const String &state) {
+  if (dynamicPersonaReceiving &&
+      dynamicPersonaTransferSlug.length() &&
+      (dynamicPersonaAtlasReceiving || slug == dynamicPersonaTransferSlug)) {
+    return nullptr;
+  }
   String visualState = dynamicPersonaVisualState(state);
   if (dynamicPersonaReady && dynamicPersonaSlug.length() && slug == dynamicPersonaSlug &&
       visualState == dynamicPersonaState) {
@@ -1902,6 +2135,8 @@ static void invalidateDynamicPersonaImage(uint8_t slot) {
 static void clearDynamicPersonaFrame() {
   dynamicPersonaReady = false;
   dynamicPersonaReceiving = false;
+  dynamicPersonaAtlasReceiving = false;
+  dynamicPersonaAtlasReady = false;
   dynamicPersonaShowLoading = true;
   dynamicPersonaId = "";
   dynamicPersonaSlug = "";
@@ -1914,12 +2149,22 @@ static void clearDynamicPersonaFrame() {
   dynamicPersonaTransferState = "idle";
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaReceived = 0;
+  dynamicPersonaTransferExpectedBytes = 0;
   dynamicPersonaFrameCount = 1;
   dynamicPersonaTransferFrameCount = 1;
   dynamicPersonaTransferFrameIndex = 0;
   dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
   dynamicPersonaRleIndex = 0;
+  dynamicPersonaAtlasWidth = 0;
+  dynamicPersonaAtlasHeight = 0;
+  dynamicPersonaAtlasCols = 0;
+  dynamicPersonaAtlasRows = 0;
+  dynamicPersonaAtlasFrameCount = 1;
+#if defined(ESP32)
+  if (dynamicPersonaAtlasWriteFile) dynamicPersonaAtlasWriteFile.close();
+  dynamicPersonaAtlasWriteBufferSize = 0;
+#endif
   for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES; i++) {
     invalidateDynamicPersonaImage(i);
   }
@@ -1937,6 +2182,23 @@ static String dynamicPersonaFramePath(const String &state, uint8_t frameIndex, b
   String path = String("/pet_") + visual + "_" + String(frameIndex);
   path += temporary ? ".tmp" : ".bin";
   return path;
+}
+
+static void removeDynamicPersonaFrameFiles() {
+  if (!ensureDynamicPersonaStore()) return;
+  for (uint8_t stateIndex = 0; stateIndex < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; stateIndex++) {
+    String state = String(DYNAMIC_PERSONA_STATE_NAMES[stateIndex]);
+    for (uint8_t frameIndex = 0; frameIndex < CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES; frameIndex++) {
+      SPIFFS.remove(dynamicPersonaFramePath(state, frameIndex, false).c_str());
+      SPIFFS.remove(dynamicPersonaFramePath(state, frameIndex, true).c_str());
+    }
+  }
+}
+
+static void removeDynamicPersonaAtlasFiles() {
+  if (!ensureDynamicPersonaStore()) return;
+  SPIFFS.remove(DYNAMIC_PERSONA_ATLAS_PATH);
+  SPIFFS.remove(DYNAMIC_PERSONA_ATLAS_TMP_PATH);
 }
 
 static bool writeDynamicPersonaFile(const String &tmpPath, const String &path, const uint8_t *data, size_t size) {
@@ -1970,6 +2232,7 @@ static bool readDynamicPersonaFile(const String &path, uint8_t *data, size_t siz
 static bool writeDynamicPersonaMeta() {
   JsonDocument doc;
   doc["v"] = 2;
+  doc["mode"] = "frames";
   doc["w"] = CODE_PET_DYNAMIC_PERSONA_WIDTH;
   doc["h"] = CODE_PET_DYNAMIC_PERSONA_HEIGHT;
   doc["z"] = CODE_PET_DYNAMIC_PERSONA_BYTES;
@@ -1995,12 +2258,61 @@ static bool writeDynamicPersonaMeta() {
   return SPIFFS.rename(DYNAMIC_PERSONA_META_TMP_PATH, DYNAMIC_PERSONA_META_PATH);
 }
 
+static bool writeDynamicPersonaAtlasMeta() {
+  if (!dynamicPersonaAtlasReady || !dynamicPersonaCachedSlug.length()) return false;
+  JsonDocument doc;
+  doc["v"] = 3;
+  doc["mode"] = "atlas";
+  doc["w"] = CODE_PET_DYNAMIC_PERSONA_WIDTH;
+  doc["h"] = CODE_PET_DYNAMIC_PERSONA_HEIGHT;
+  doc["aw"] = dynamicPersonaAtlasWidth;
+  doc["ah"] = dynamicPersonaAtlasHeight;
+  doc["z"] = dynamicPersonaTransferExpectedBytes;
+  doc["p"] = dynamicPersonaCachedSlug;
+  doc["d"] = pet.personaName;
+  doc["k"] = pet.personaKind;
+  doc["u"] = pet.spriteUrl;
+  doc["th"] = dynamicPersonaCachedTheme.length() ? dynamicPersonaCachedTheme : pet.theme;
+  doc["cols"] = dynamicPersonaAtlasCols;
+  doc["rows"] = dynamicPersonaAtlasRows;
+  doc["fc"] = dynamicPersonaAtlasFrameCount;
+  doc["sm"] = dynamicPersonaCachedStateMask;
+  JsonArray states = doc["states"].to<JsonArray>();
+  for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) states.add(DYNAMIC_PERSONA_STATE_NAMES[i]);
+
+  SPIFFS.remove(DYNAMIC_PERSONA_META_TMP_PATH);
+  fs::File meta = SPIFFS.open(DYNAMIC_PERSONA_META_TMP_PATH, FILE_WRITE);
+  if (!meta) return false;
+  bool ok = serializeJson(doc, meta) > 0;
+  meta.close();
+  if (!ok) {
+    SPIFFS.remove(DYNAMIC_PERSONA_META_TMP_PATH);
+    return false;
+  }
+  SPIFFS.remove(DYNAMIC_PERSONA_META_PATH);
+  return SPIFFS.rename(DYNAMIC_PERSONA_META_TMP_PATH, DYNAMIC_PERSONA_META_PATH);
+}
+
 static void resetDynamicPersonaCacheFor(const String &slug, const String &theme) {
   dynamicPersonaCachedSlug = slug;
   dynamicPersonaCachedTheme = (theme == "night" || theme == "dark") ? theme : "day";
   dynamicPersonaCachedStateMask = 0;
   for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) dynamicPersonaCachedFrameCounts[i] = 0;
+  dynamicPersonaReady = false;
+  dynamicPersonaSlug = "";
+  dynamicPersonaState = "idle";
+  dynamicPersonaAtlasReady = false;
+  dynamicPersonaAtlasWidth = 0;
+  dynamicPersonaAtlasHeight = 0;
+  dynamicPersonaAtlasCols = 0;
+  dynamicPersonaAtlasRows = 0;
+  dynamicPersonaAtlasFrameCount = 1;
+  for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES; i++) {
+    invalidateDynamicPersonaImage(i);
+  }
   SPIFFS.remove(DYNAMIC_PERSONA_META_PATH);
+  removeDynamicPersonaFrameFiles();
+  removeDynamicPersonaAtlasFiles();
 }
 
 static bool saveDynamicPersonaFrame() {
@@ -2031,7 +2343,67 @@ static bool saveDynamicPersonaFrame() {
   dynamicPersonaCachedFrameCounts[stateIndex] = count;
   dynamicPersonaCachedSlug = dynamicPersonaSlug;
   dynamicPersonaCachedTheme = (pet.theme == "night" || pet.theme == "dark") ? pet.theme : "day";
+  dynamicPersonaAtlasReady = false;
+  dynamicPersonaAtlasWidth = 0;
+  dynamicPersonaAtlasHeight = 0;
+  dynamicPersonaAtlasCols = 0;
+  dynamicPersonaAtlasRows = 0;
+  dynamicPersonaAtlasFrameCount = 1;
+  removeDynamicPersonaAtlasFiles();
   return writeDynamicPersonaMeta();
+}
+
+static bool loadDynamicPersonaAtlasStateFrames(const String &state) {
+  if (!ensureDynamicPersonaStore()) return false;
+  if (!dynamicPersonaAtlasReady || !dynamicPersonaCachedSlug.length()) return false;
+  if (!dynamicPersonaAtlasWidth || !dynamicPersonaAtlasHeight ||
+      !dynamicPersonaAtlasCols || !dynamicPersonaAtlasRows) {
+    return false;
+  }
+
+  String visual = dynamicPersonaVisualState(state);
+  int8_t stateIndex = dynamicPersonaStateIndex(visual);
+  if (stateIndex < 0 || stateIndex >= dynamicPersonaAtlasRows) return false;
+
+  fs::File file = SPIFFS.open(DYNAMIC_PERSONA_ATLAS_PATH, FILE_READ);
+  if (!file) return false;
+
+  uint8_t count = dynamicPersonaAtlasFrameCount;
+  if (count < 1) count = 1;
+  if (count > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES) count = CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES;
+  if (count > dynamicPersonaAtlasCols) count = dynamicPersonaAtlasCols;
+
+  const uint32_t rowByteWidth = static_cast<uint32_t>(dynamicPersonaAtlasWidth) * 2U;
+  const uint32_t frameRowBytes = static_cast<uint32_t>(CODE_PET_DYNAMIC_PERSONA_WIDTH) * 2U;
+  for (uint8_t slot = 0; slot < count; slot++) {
+    uint8_t *dst = dynamicPersonaPixels[slot];
+    for (uint16_t y = 0; y < CODE_PET_DYNAMIC_PERSONA_HEIGHT; y++) {
+      uint32_t offset = (static_cast<uint32_t>(stateIndex) * CODE_PET_DYNAMIC_PERSONA_HEIGHT + y) * rowByteWidth;
+      offset += static_cast<uint32_t>(slot) * frameRowBytes;
+      if (!file.seek(offset, fs::SeekSet)) {
+        file.close();
+        return false;
+      }
+      size_t read = file.read(dst + static_cast<uint32_t>(y) * frameRowBytes, frameRowBytes);
+      if (read != frameRowBytes) {
+        file.close();
+        return false;
+      }
+    }
+    invalidateDynamicPersonaImage(slot);
+  }
+  file.close();
+
+  dynamicPersonaReady = true;
+  dynamicPersonaSlug = dynamicPersonaCachedSlug;
+  dynamicPersonaState = visual;
+  dynamicPersonaFrameCount = count;
+  dynamicPersonaReceivedFrameMask = (1U << count) - 1U;
+  dynamicPersonaReceived = 0;
+  dynamicPersonaExpectedSeq = 0;
+  dynamicPersonaRleIndex = 0;
+  dynamicPersonaLastProgressPercent = 100;
+  return true;
 }
 
 static bool loadDynamicPersonaStateFrames(const String &state) {
@@ -2040,6 +2412,7 @@ static bool loadDynamicPersonaStateFrames(const String &state) {
   String visual = dynamicPersonaVisualState(state);
   int8_t stateIndex = dynamicPersonaStateIndex(visual);
   if (stateIndex < 0) return false;
+  if (dynamicPersonaAtlasReady) return loadDynamicPersonaAtlasStateFrames(visual);
   if (!(dynamicPersonaCachedStateMask & (1U << stateIndex))) return false;
 
   uint8_t count = dynamicPersonaCachedFrameCounts[stateIndex];
@@ -2076,10 +2449,66 @@ static void loadDynamicPersonaFrame() {
   if (error) return;
 
   int version = doc["v"] | 0;
+  String mode = String(doc["mode"] | "frames");
   int width = doc["w"] | 0;
   int height = doc["h"] | 0;
   uint32_t size = doc["z"] | 0;
   String slug = cleanText(String(doc["p"] | ""), 48);
+  if (mode == "atlas") {
+    int atlasWidth = doc["aw"] | 0;
+    int atlasHeight = doc["ah"] | 0;
+    int cols = doc["cols"] | 0;
+    int rows = doc["rows"] | 0;
+    int frameCount = doc["fc"] | 1;
+    if (version < 3 ||
+        !slug.length() ||
+        width != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
+        height != CODE_PET_DYNAMIC_PERSONA_HEIGHT ||
+        cols < 1 ||
+        cols > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES ||
+        rows != CODE_PET_DYNAMIC_PERSONA_STATE_COUNT ||
+        atlasWidth != CODE_PET_DYNAMIC_PERSONA_WIDTH * cols ||
+        atlasHeight != CODE_PET_DYNAMIC_PERSONA_HEIGHT * rows ||
+        size != static_cast<uint32_t>(atlasWidth) * atlasHeight * 2U ||
+        frameCount < 1 ||
+        frameCount > cols ||
+        !SPIFFS.exists(DYNAMIC_PERSONA_ATLAS_PATH)) {
+      return;
+    }
+
+    dynamicPersonaAtlasReady = true;
+    dynamicPersonaAtlasReceiving = false;
+    dynamicPersonaAtlasWidth = static_cast<uint16_t>(atlasWidth);
+    dynamicPersonaAtlasHeight = static_cast<uint16_t>(atlasHeight);
+    dynamicPersonaAtlasCols = static_cast<uint8_t>(cols);
+    dynamicPersonaAtlasRows = static_cast<uint8_t>(rows);
+    dynamicPersonaAtlasFrameCount = static_cast<uint8_t>(frameCount);
+    dynamicPersonaTransferExpectedBytes = size;
+    dynamicPersonaCachedSlug = slug;
+    dynamicPersonaCachedTheme = cleanText(String(doc["th"] | "day"), 12);
+    dynamicPersonaCachedTheme = (dynamicPersonaCachedTheme == "night" || dynamicPersonaCachedTheme == "dark") ? dynamicPersonaCachedTheme : "day";
+    dynamicPersonaCachedStateMask = (1U << CODE_PET_DYNAMIC_PERSONA_STATE_COUNT) - 1U;
+    for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) {
+      dynamicPersonaCachedFrameCounts[i] = dynamicPersonaAtlasFrameCount;
+    }
+    dynamicPersonaReceiving = false;
+    dynamicPersonaShowLoading = true;
+    dynamicPersonaTransferSlug = "";
+    dynamicPersonaTransferState = "idle";
+    dynamicPersonaExpectedSeq = 0;
+    dynamicPersonaReceived = 0;
+    dynamicPersonaRleIndex = 0;
+
+    pet.personaSlug = slug;
+    pet.personaName = cleanText(String(doc["d"] | ""), 48);
+    if (!pet.personaName.length()) pet.personaName = slug;
+    pet.personaKind = cleanText(String(doc["k"] | ""), 24);
+    pet.spriteUrl = String(doc["u"] | "");
+    pet.theme = dynamicPersonaCachedTheme;
+    loadDynamicPersonaStateFrames(dynamicPersonaVisualState(pet.state));
+    return;
+  }
+
   if (version < 1 ||
       !slug.length() ||
       width != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
@@ -2148,17 +2577,25 @@ static void loadDynamicPersonaFrame() {}
 #endif
 
 static void abortDynamicPersonaTransfer() {
+  if (dynamicPersonaAtlasReceiving) dynamicPersonaAtlasReady = false;
   dynamicPersonaReceiving = false;
+  dynamicPersonaAtlasReceiving = false;
   dynamicPersonaShowLoading = true;
   dynamicPersonaTransferSlug = "";
   dynamicPersonaTransferState = "idle";
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaReceived = 0;
+  dynamicPersonaTransferExpectedBytes = 0;
   dynamicPersonaTransferFrameCount = 1;
   dynamicPersonaTransferFrameIndex = 0;
   dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
   dynamicPersonaRleIndex = 0;
+#if defined(ESP32)
+  if (dynamicPersonaAtlasWriteFile) dynamicPersonaAtlasWriteFile.close();
+  dynamicPersonaAtlasWriteBufferSize = 0;
+  if (ensureDynamicPersonaStore()) SPIFFS.remove(DYNAMIC_PERSONA_ATLAS_TMP_PATH);
+#endif
   markDirty();
 }
 
@@ -2213,8 +2650,263 @@ static bool appendDynamicPersonaBase64(const String &encoded) {
   return true;
 }
 
+static bool flushDynamicPersonaAtlasWriteBuffer() {
+#if defined(ESP32)
+  if (!dynamicPersonaAtlasWriteBufferSize) return true;
+  if (!dynamicPersonaAtlasWriteFile) return false;
+  size_t written = dynamicPersonaAtlasWriteFile.write(dynamicPersonaAtlasWriteBuffer,
+                                                      dynamicPersonaAtlasWriteBufferSize);
+  if (written != dynamicPersonaAtlasWriteBufferSize) return false;
+  dynamicPersonaAtlasWriteBufferSize = 0;
+  return true;
+#else
+  return false;
+#endif
+}
+
+static bool appendDynamicPersonaAtlasByte(uint8_t value) {
+#if defined(ESP32)
+  if (!dynamicPersonaAtlasWriteFile) return false;
+  if (!dynamicPersonaTransferExpectedBytes ||
+      dynamicPersonaReceived >= dynamicPersonaTransferExpectedBytes) {
+    return false;
+  }
+  if (dynamicPersonaAtlasWriteBufferSize >= sizeof(dynamicPersonaAtlasWriteBuffer) &&
+      !flushDynamicPersonaAtlasWriteBuffer()) {
+    return false;
+  }
+  dynamicPersonaAtlasWriteBuffer[dynamicPersonaAtlasWriteBufferSize++] = value;
+  dynamicPersonaReceived++;
+  if (dynamicPersonaAtlasWriteBufferSize >= sizeof(dynamicPersonaAtlasWriteBuffer) &&
+      !flushDynamicPersonaAtlasWriteBuffer()) {
+    return false;
+  }
+  return true;
+#else
+  (void)value;
+  return false;
+#endif
+}
+
+static bool appendDynamicPersonaAtlasDecodedByte(uint8_t value) {
+  if (dynamicPersonaFormat == DYNAMIC_PERSONA_RLE_RGB565) {
+    dynamicPersonaRleTriple[dynamicPersonaRleIndex++] = value;
+    if (dynamicPersonaRleIndex < 3) return true;
+
+    uint8_t lo = dynamicPersonaRleTriple[0];
+    uint8_t hi = dynamicPersonaRleTriple[1];
+    uint8_t count = dynamicPersonaRleTriple[2];
+    dynamicPersonaRleIndex = 0;
+    if (count == 0) return false;
+    for (uint8_t i = 0; i < count; i++) {
+      if (!appendDynamicPersonaAtlasByte(lo) || !appendDynamicPersonaAtlasByte(hi)) return false;
+    }
+    return true;
+  }
+
+  return appendDynamicPersonaAtlasByte(value);
+}
+
+static bool appendDynamicPersonaAtlasBase64(const String &encoded) {
+  int value = 0;
+  int bits = -8;
+  for (size_t i = 0; i < encoded.length(); i++) {
+    char c = encoded[i];
+    if (c == '=') break;
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+    int8_t digit = base64Value(c);
+    if (digit < 0) return false;
+    value = (value << 6) | digit;
+    bits += 6;
+    if (bits >= 0) {
+      if (!appendDynamicPersonaAtlasDecodedByte(static_cast<uint8_t>((value >> bits) & 0xFF))) return false;
+      bits -= 8;
+    }
+  }
+  return true;
+}
+
+static void applyDynamicPersonaBinaryPayload(const std::string &value) {
+  if (value.length() < 5 || value[0] != '~') return;
+  char op = value[1];
+  uint16_t seq = static_cast<uint8_t>(value[2]) |
+                 (static_cast<uint16_t>(static_cast<uint8_t>(value[3])) << 8);
+
+  if (op == 'a') {
+    if (!dynamicPersonaAtlasReceiving || !dynamicPersonaReceiving ||
+        seq != dynamicPersonaExpectedSeq) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+    for (size_t i = 4; i < value.length(); i++) {
+      if (!appendDynamicPersonaAtlasDecodedByte(static_cast<uint8_t>(value[i]))) {
+        abortDynamicPersonaTransfer();
+        return;
+      }
+    }
+    dynamicPersonaExpectedSeq++;
+    uint8_t progress = dynamicPersonaProgressPercent();
+    if (progress != dynamicPersonaLastProgressPercent) {
+      dynamicPersonaLastProgressPercent = progress;
+      if (dynamicPersonaShowLoading) markDirty();
+    }
+  }
+}
+
 static void applyDynamicPersonaPayload(JsonVariantConst src) {
   String op = String(src["im"] | "");
+
+  if (op == "as") {
+    String id = cleanText(String(src["id"] | ""), 48);
+    String slug = cleanText(String(src["p"] | ""), 48);
+    String displayName = cleanText(String(src["d"] | src["displayName"] | ""), 48);
+    String kind = cleanText(String(src["k"] | src["kind"] | ""), 24);
+    String spriteUrl = String(src["u"] | src["spritesheetUrl"] | "");
+    String theme = cleanText(String(src["th"] | src["theme"] | ""), 12);
+    theme = (theme == "night" || theme == "dark") ? theme : "day";
+    String format = String(src["f"] | "");
+    int width = src["w"] | 0;
+    int height = src["h"] | 0;
+    int atlasWidth = src["aw"] | 0;
+    int atlasHeight = src["ah"] | 0;
+    uint32_t size = src["z"] | 0;
+    int cols = src["cols"] | 0;
+    if (!cols) cols = src["fc"] | 0;
+    int rows = src["rows"] | 0;
+    if (!rows) rows = src["sc"] | 0;
+    int frameCount = src["fc"] | cols;
+    bool showLoading = true;
+
+    if (!id.length() || !slug.length() ||
+        width != CODE_PET_DYNAMIC_PERSONA_WIDTH ||
+        height != CODE_PET_DYNAMIC_PERSONA_HEIGHT ||
+        cols < 1 ||
+        cols > CODE_PET_DYNAMIC_PERSONA_MAX_FRAMES ||
+        rows != CODE_PET_DYNAMIC_PERSONA_STATE_COUNT ||
+        atlasWidth != CODE_PET_DYNAMIC_PERSONA_WIDTH * cols ||
+        atlasHeight != CODE_PET_DYNAMIC_PERSONA_HEIGHT * rows ||
+        size != static_cast<uint32_t>(atlasWidth) * atlasHeight * 2U ||
+        frameCount < 1 ||
+        frameCount > cols ||
+        (format != "rgb565" && format != "rgb565-rle")) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+
+#if defined(ESP32)
+    if (!ensureDynamicPersonaStore()) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+    if (dynamicPersonaAtlasWriteFile) dynamicPersonaAtlasWriteFile.close();
+    dynamicPersonaAtlasWriteBufferSize = 0;
+    resetDynamicPersonaCacheFor(slug, theme);
+    SPIFFS.remove(DYNAMIC_PERSONA_ATLAS_TMP_PATH);
+    dynamicPersonaAtlasWriteFile = SPIFFS.open(DYNAMIC_PERSONA_ATLAS_TMP_PATH, FILE_WRITE);
+    if (!dynamicPersonaAtlasWriteFile) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+#else
+    abortDynamicPersonaTransfer();
+    return;
+#endif
+
+    dynamicPersonaReceiving = true;
+    dynamicPersonaAtlasReceiving = true;
+    dynamicPersonaAtlasReady = false;
+    dynamicPersonaShowLoading = showLoading;
+    dynamicPersonaId = id;
+    dynamicPersonaTransferSlug = slug;
+    dynamicPersonaTransferState = dynamicPersonaVisualState(pet.state);
+    dynamicPersonaFormat = format == "rgb565-rle" ? DYNAMIC_PERSONA_RLE_RGB565 : DYNAMIC_PERSONA_RAW_RGB565;
+    dynamicPersonaExpectedSeq = 0;
+    dynamicPersonaReceived = 0;
+    dynamicPersonaTransferExpectedBytes = size;
+    dynamicPersonaTransferFrameCount = 1;
+    dynamicPersonaTransferFrameIndex = 0;
+    dynamicPersonaReceivedFrameMask = 0;
+    dynamicPersonaLastProgressPercent = 0;
+    dynamicPersonaRleIndex = 0;
+    dynamicPersonaAtlasWidth = static_cast<uint16_t>(atlasWidth);
+    dynamicPersonaAtlasHeight = static_cast<uint16_t>(atlasHeight);
+    dynamicPersonaAtlasCols = static_cast<uint8_t>(cols);
+    dynamicPersonaAtlasRows = static_cast<uint8_t>(rows);
+    dynamicPersonaAtlasFrameCount = static_cast<uint8_t>(frameCount);
+    pet.personaSlug = slug;
+    if (displayName.length()) pet.personaName = displayName;
+    else if (!pet.personaName.length()) pet.personaName = slug;
+    if (kind.length()) pet.personaKind = kind;
+    if (!src["u"].isNull() || !src["spritesheetUrl"].isNull()) pet.spriteUrl = spriteUrl;
+    if (theme.length()) pet.theme = theme;
+    markDirty();
+    return;
+  }
+
+  if (op == "ac") {
+    String id = String(src["id"] | "");
+    int seq = src["q"] | -1;
+    if (!dynamicPersonaAtlasReceiving || !dynamicPersonaReceiving ||
+        id != dynamicPersonaId || seq != dynamicPersonaExpectedSeq) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+    String data = String(src["d"] | "");
+    if (!data.length() || !appendDynamicPersonaAtlasBase64(data)) {
+      abortDynamicPersonaTransfer();
+      return;
+    }
+    dynamicPersonaExpectedSeq++;
+    uint8_t progress = dynamicPersonaProgressPercent();
+    if (progress != dynamicPersonaLastProgressPercent) {
+      dynamicPersonaLastProgressPercent = progress;
+      if (dynamicPersonaShowLoading) markDirty();
+    }
+    return;
+  }
+
+  if (op == "ae") {
+    String id = String(src["id"] | "");
+    if (dynamicPersonaAtlasReceiving && dynamicPersonaReceiving &&
+        id == dynamicPersonaId &&
+        dynamicPersonaReceived == dynamicPersonaTransferExpectedBytes &&
+        dynamicPersonaRleIndex == 0) {
+#if defined(ESP32)
+      if (!flushDynamicPersonaAtlasWriteBuffer()) {
+        abortDynamicPersonaTransfer();
+        return;
+      }
+      if (dynamicPersonaAtlasWriteFile) dynamicPersonaAtlasWriteFile.close();
+      SPIFFS.remove(DYNAMIC_PERSONA_ATLAS_PATH);
+      if (!SPIFFS.rename(DYNAMIC_PERSONA_ATLAS_TMP_PATH, DYNAMIC_PERSONA_ATLAS_PATH)) {
+        abortDynamicPersonaTransfer();
+        return;
+      }
+#endif
+      dynamicPersonaAtlasReady = true;
+      dynamicPersonaReady = false;
+      dynamicPersonaCachedSlug = dynamicPersonaTransferSlug;
+      dynamicPersonaCachedTheme = (pet.theme == "night" || pet.theme == "dark") ? pet.theme : "day";
+      dynamicPersonaCachedStateMask = (1U << CODE_PET_DYNAMIC_PERSONA_STATE_COUNT) - 1U;
+      for (uint8_t i = 0; i < CODE_PET_DYNAMIC_PERSONA_STATE_COUNT; i++) {
+        dynamicPersonaCachedFrameCounts[i] = dynamicPersonaAtlasFrameCount;
+      }
+      if (!loadDynamicPersonaStateFrames(dynamicPersonaVisualState(pet.state))) {
+        abortDynamicPersonaTransfer();
+        return;
+      }
+      dynamicPersonaReceiving = false;
+      dynamicPersonaAtlasReceiving = false;
+      dynamicPersonaTransferSlug = "";
+      dynamicPersonaTransferState = "idle";
+      dynamicPersonaLastProgressPercent = 100;
+      writeDynamicPersonaAtlasMeta();
+      markDirty();
+    } else {
+      abortDynamicPersonaTransfer();
+    }
+    return;
+  }
 
   if (op == "s") {
     String id = cleanText(String(src["id"] | ""), 48);
@@ -2265,12 +2957,14 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     }
 
     dynamicPersonaReceiving = true;
+    dynamicPersonaAtlasReceiving = false;
     dynamicPersonaShowLoading = showLoading;
     dynamicPersonaId = id;
     dynamicPersonaTransferFrameIndex = static_cast<uint8_t>(frameSlot);
     dynamicPersonaFormat = format == "rgb565-rle" ? DYNAMIC_PERSONA_RLE_RGB565 : DYNAMIC_PERSONA_RAW_RGB565;
     dynamicPersonaExpectedSeq = 0;
     dynamicPersonaReceived = 0;
+    dynamicPersonaTransferExpectedBytes = static_cast<uint32_t>(frameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
     dynamicPersonaLastProgressPercent = 0;
     dynamicPersonaRleIndex = 0;
     String previousPersonaSlug = pet.personaSlug;
@@ -2293,7 +2987,8 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
   if (op == "c") {
     String id = String(src["id"] | "");
     int seq = src["q"] | -1;
-    if (!dynamicPersonaReceiving || id != dynamicPersonaId || seq != dynamicPersonaExpectedSeq) {
+    if (dynamicPersonaAtlasReceiving || !dynamicPersonaReceiving ||
+        id != dynamicPersonaId || seq != dynamicPersonaExpectedSeq) {
       abortDynamicPersonaTransfer();
       return;
     }
@@ -2313,7 +3008,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
 
   if (op == "e") {
     String id = String(src["id"] | "");
-    if (dynamicPersonaReceiving && id == dynamicPersonaId &&
+    if (!dynamicPersonaAtlasReceiving && dynamicPersonaReceiving && id == dynamicPersonaId &&
         dynamicPersonaReceived == CODE_PET_DYNAMIC_PERSONA_BYTES &&
         dynamicPersonaRleIndex == 0) {
       dynamicPersonaReceiving = false;
@@ -2560,6 +3255,12 @@ static void enqueueCompletedBleFragment() {
 static void handleBleWriteValue(const std::string &value) {
   if (!value.length()) return;
   char marker = value[0];
+#if defined(CODE_PET_USE_COLOR_LVGL)
+  if (marker == '~') {
+    applyDynamicPersonaBinaryPayload(value);
+    return;
+  }
+#endif
   if (marker == '#') {
     char id = '\0';
     size_t expectedBytes = 0;
@@ -2782,7 +3483,14 @@ void loop() {
   }
 #endif
 
-  if (millis() - lastFrameAt > CODE_PET_ANIMATION_FRAME_MS) {
+  const bool pauseFrameAnimation =
+#if defined(CODE_PET_USE_COLOR_LVGL)
+    dynamicPersonaLoadingCurrent();
+#else
+    false;
+#endif
+
+  if (!pauseFrameAnimation && millis() - lastFrameAt > CODE_PET_ANIMATION_FRAME_MS) {
     lastFrameAt = millis();
     frameIndex++;
     uiDirty = true;

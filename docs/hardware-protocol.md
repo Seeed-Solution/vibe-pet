@@ -135,6 +135,55 @@ The desktop UI lets each pet choose a character. Hardware receives the selected 
 
 Color displays can use these fields to choose a palette, local sprite, or downloaded sprite. OLED devices can render the same name and state with a local simplified body.
 
+### Dynamic Image Transfer
+
+Desktop may follow a normal state packet with optional image-transfer packets when the selected character uses an external spritesheet. Devices that do not implement image transfer should ignore packets whose `im` field is unknown.
+
+Wio-class devices receive the legacy per-state frame stream:
+
+| `im` | Meaning |
+| --- | --- |
+| `s` | Start one RGB565 frame for one visual state. |
+| `c` | Append a base64 data chunk for the active frame transfer. |
+| `e` | Finish the active frame transfer. |
+| `x` | Cancel the active transfer. |
+
+ESP color devices receive a single atlas stream so the device stores one image and selects a display region for the current state:
+
+| `im` | Meaning |
+| --- | --- |
+| `as` | Start an RGB565 atlas transfer. |
+| `ac` | Append a base64 data chunk for the active atlas transfer. |
+| `ae` | Finish the active atlas transfer. |
+| `x` | Cancel the active transfer. |
+
+The atlas start packet includes the character identity plus layout metadata:
+
+```json
+{
+  "im": "as",
+  "id": "transfer-id",
+  "p": "petdex-slug",
+  "d": "Display name",
+  "k": "petdex",
+  "u": "spritesheet-url",
+  "w": 144,
+  "h": 156,
+  "aw": 288,
+  "ah": 936,
+  "f": "rgb565-rle",
+  "z": 539136,
+  "cols": 2,
+  "rows": 6,
+  "fc": 2,
+  "st": "idle,notification,working,error,thinking,attention",
+  "ld": 1,
+  "th": "day"
+}
+```
+
+`w`/`h` describe one frame cell, `aw`/`ah` describe the full atlas, `z` is the decoded RGB565 byte count, and `f` is either `rgb565` or `rgb565-rle`. Chunk packets use `{ "im": "ac", "id": "...", "q": 0, "d": "..." }`, where `q` increments from `0` and `d` is base64 data. ESP color firmware also accepts binary atlas chunks for compatibility experiments, but the desktop bridge uses the JSON chunk path by default because it is easier to validate over BLE. Firmware may discard older dynamic image files before receiving the atlas to keep storage bounded; after `ae`, it should rename the completed temporary atlas into the current atlas path.
+
 ## Recommended Device Implementation
 
 1. Advertise a `VibePet-*` device name and the service UUID.
