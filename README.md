@@ -36,6 +36,10 @@ Vibe Pet is a hardware desktop pet project for AI coding agents. It watches live
   <img src="images/home.gif" width="43.5%" alt="Vibe Pet character picker">
   <img src="images/work.gif" width="49%" alt="Vibe Pet desktop companion">
 </p>
+<p align="center">
+  <img src="images/work-cap.gif" width="49%" alt="Vibe Pet 角色选择器">
+  <img src="images/work-vibe-pet.gif" width="49%" alt="Vibe Pet 桌面宠物">
+</p>
 
 ## Highlights
 
@@ -70,9 +74,9 @@ Vibe Pet automatically tries to install or sync integrations for:
 
 | Hardware | Display / role | Sync | Adapted | Notes |
 | --- | --- | --- | --- | --- |
-| [SenseCAP Indicator](https://wiki.seeedstudio.com/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) | 4-inch 480×480 touch display | BLE | Ing | ESP32-S3 + RP2040; ST7701S RGB display; LVGL character rendering. |
+| [SenseCAP Indicator](https://wiki.seeedstudio.com/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) | 4-inch 480×480 touch display | BLE | ✅️ | ESP32-S3 + RP2040; ST7701S RGB display; LVGL character rendering. |
 | [Wio Terminal](https://www.seeedstudio.com/Wio-Terminal-p-4509.html) | Main animated pet display | BLE | Ing | Mature BLE animated display target. |
-| [Vibe Pet](https://espai.fun/open/pcb/mini-ext/1.0.0/) | ESP32-S3-based AI dev kit | BLE | Ing | TFT target; LVGL character rendering. |
+| [Vibe Pet](https://espai.fun/open/pcb/mini-ext/1.0.0/) | ESP32-S3-based AI dev kit | BLE | ✅️ | TFT target; LVGL character rendering. |
 
 Want to bring Vibe Pet to your own device? The BLE and Wi-Fi hardware payloads are intentionally small, so new screens, status lights, badges, and custom boards can be added without changing the desktop app.
 
