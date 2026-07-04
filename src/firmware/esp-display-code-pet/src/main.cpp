@@ -122,6 +122,9 @@ extern Arduino_GFX *gfx;
 
 #define CODE_PET_DISCONNECTED_LABEL "Disconnected"
 #define CODE_PET_OUTPUT_MAX_CHARS 120
+#ifndef CODE_PET_LVGL_FALLBACK_PERSONA_SLUG
+#define CODE_PET_LVGL_FALLBACK_PERSONA_SLUG "lulu"
+#endif
 
 #if defined(CODE_PET_STATUS_PIXEL)
 Adafruit_NeoPixel statusPixel(CP_STATUS_PIXEL_COUNT, CP_STATUS_PIXEL_PIN, NEO_GRB + NEO_KHZ800);
@@ -513,10 +516,6 @@ extern bool codePetPersonaAvailable(const String &slug);
 
 #ifndef CODE_PET_LVGL_TFT_SWAP_RB
 #define CODE_PET_LVGL_TFT_SWAP_RB 0
-#endif
-
-#ifndef CODE_PET_LVGL_FALLBACK_PERSONA_SLUG
-#define CODE_PET_LVGL_FALLBACK_PERSONA_SLUG "lulu"
 #endif
 
 static lv_color_t lvColor(uint16_t color) {
@@ -1070,7 +1069,7 @@ static bool dynamicPersonaLoadingFor(const String &slug, const String &visualSta
 static bool dynamicPersonaLoadingCurrent() {
   if (!dynamicPersonaReceiving || !displayConnected()) return false;
   const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
-  String slug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
+  String slug = displayConnected() && pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
   String visualState = dynamicPersonaVisualState(normalizePacketState(pet.state));
   return dynamicPersonaLoadingFor(slug, visualState);
 }
@@ -1622,7 +1621,7 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   ensureLvglUi();
   const bool connected = displayConnected();
   const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
-  String renderSlug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
+  String renderSlug = connected && pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
   String renderState = normalizePacketState(connected ? pet.state : String("idle"));
   String renderVisualState = dynamicPersonaVisualState(renderState);
   const bool imageLoading = dynamicPersonaLoadingFor(renderSlug, renderVisualState);
@@ -1630,7 +1629,7 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   const lv_img_dsc_t *frame = nullptr;
   bool frameUsesCurrentPersona = false;
   if (!imageLoading) {
-    frame = dynamicPersonaFrameForSlug(renderSlug, renderState);
+    frame = connected ? dynamicPersonaFrameForSlug(renderSlug, renderState) : nullptr;
     frameUsesCurrentPersona = frame != nullptr;
     if (!frame) {
       frame = codePetPersonaFrame(renderSlug, renderState, frameIndex);
@@ -1639,10 +1638,6 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
     if (!frame && connected) {
       frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
       frameUsesCurrentPersona = false;
-    }
-    if (!frame && !connected && dynamicPersonaReady) {
-      frame = dynamicPersonaFrameForSlug(dynamicPersonaSlug, dynamicPersonaState);
-      frameUsesCurrentPersona = frame != nullptr;
     }
     if (!frame) {
       frame = codePetPersonaFrame(fallbackSlug, renderState, frameIndex);
@@ -2499,12 +2494,6 @@ static void loadDynamicPersonaFrame() {
     dynamicPersonaReceived = 0;
     dynamicPersonaRleIndex = 0;
 
-    pet.personaSlug = slug;
-    pet.personaName = cleanText(String(doc["d"] | ""), 48);
-    if (!pet.personaName.length()) pet.personaName = slug;
-    pet.personaKind = cleanText(String(doc["k"] | ""), 24);
-    pet.spriteUrl = String(doc["u"] | "");
-    pet.theme = dynamicPersonaCachedTheme;
     loadDynamicPersonaStateFrames(dynamicPersonaVisualState(pet.state));
     return;
   }
@@ -2549,13 +2538,6 @@ static void loadDynamicPersonaFrame() {
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaReceived = 0;
   dynamicPersonaRleIndex = 0;
-
-  pet.personaSlug = slug;
-  pet.personaName = cleanText(String(doc["d"] | ""), 48);
-  if (!pet.personaName.length()) pet.personaName = slug;
-  pet.personaKind = cleanText(String(doc["k"] | ""), 24);
-  pet.spriteUrl = String(doc["u"] | "");
-  pet.theme = dynamicPersonaCachedTheme;
 
   String preferredState = dynamicPersonaVisualState(pet.state);
   if (!loadDynamicPersonaStateFrames(preferredState)) {
@@ -3048,6 +3030,10 @@ static void setDisconnectedPetState() {
   String currentTheme = pet.theme;
   bool changed = pet.state != "idle" || pet.stateLabel.length() || pet.agent.length() ||
                  pet.event != CODE_PET_DISCONNECTED_LABEL || pet.title.length() || pet.output.length() ||
+                 pet.personaSlug != CODE_PET_LVGL_FALLBACK_PERSONA_SLUG ||
+                 pet.personaName != "Lulu" ||
+                 pet.personaKind.length() ||
+                 pet.spriteUrl.length() ||
                  pet.activeCount != 0;
   pet.state = "idle";
   pet.stateLabel = "";
@@ -3055,8 +3041,10 @@ static void setDisconnectedPetState() {
   pet.event = CODE_PET_DISCONNECTED_LABEL;
   pet.title = "";
   pet.output = "";
-  if (!pet.personaSlug.length()) pet.personaSlug = "lulu";
-  if (!pet.personaName.length()) pet.personaName = "Lulu";
+  pet.personaSlug = CODE_PET_LVGL_FALLBACK_PERSONA_SLUG;
+  pet.personaName = "Lulu";
+  pet.personaKind = "";
+  pet.spriteUrl = "";
   pet.theme = (currentTheme == "night" || currentTheme == "dark") ? currentTheme : "day";
   pet.activeCount = 0;
   pet.receivedAt = 0;
@@ -3415,8 +3403,8 @@ static void handleTestButton() {
     pet.event = "button-test";
     pet.title = "";
     pet.output = "button-test";
-    if (!pet.personaSlug.length()) pet.personaSlug = "lulu";
-    if (!pet.personaName.length()) pet.personaName = "Lulu";
+    pet.personaSlug = CODE_PET_LVGL_FALLBACK_PERSONA_SLUG;
+    pet.personaName = "Lulu";
     pet.activeCount = nextState == "idle" ? 0 : 1;
     pet.receivedAt = millis();
 #if defined(CODE_PET_USE_SIMPLE_DYNAMIC_PERSONA) && defined(CODE_PET_DISPLAY_TFT_ESPI)
