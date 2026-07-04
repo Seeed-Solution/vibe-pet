@@ -20,8 +20,6 @@ npm run firmware:package
 | --- | --- | --- |
 | `wio-terminal-code-pet` | Wio Terminal | BLE |
 | `esp-ai-mini-ext-tft-code-pet` | ESP-AI-MINI AI Dev Kit | BLE |
-| `esp-ai-v3-tft-code-pet` | ESP-AI v3 Dev Board | BLE |
-| `esp-ai-v3-tft-code-pet` | ESP-AI v4 Dev Board | BLE |
 | `sensecap-indicator-code-pet` | SenseCAP Indicator | BLE |
 
 Example contributor build/upload commands:

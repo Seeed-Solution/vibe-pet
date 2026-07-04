@@ -28,26 +28,10 @@ const TARGETS = [
     packer: "esp",
   },
   {
-    id: "esp_ai_v3_v4_tft",
-    aliases: ["esp_ai_common_3_tft", "esp_ai_common_4_tft", "esp-ai-v3-tft-code-pet"],
-    name: "ESP-AI v3/v4 Dev Board",
-    dir: "esp-ai-v3-tft-code-pet",
-    env: "code_pet",
-    packer: "esp",
-  },
-  {
     id: "sensecap_indicator",
     aliases: ["sensecap", "sensecap-indicator-code-pet"],
     name: "SenseCAP Indicator",
     dir: "sensecap-indicator-code-pet",
-    env: "code_pet",
-    packer: "esp",
-  },
-  {
-    id: "m5stack_cores3",
-    aliases: ["m5stack-cores3-code-pet"],
-    name: "M5Stack CoreS3",
-    dir: "m5stack-cores3-code-pet",
     env: "code_pet",
     packer: "esp",
   },
@@ -120,7 +104,7 @@ Options:
 Examples:
   npm run firmware:package
   npm run firmware:package -- --target esp_ai_mini_ext_tft
-  npm run firmware:package -- --target wio_terminal,m5stack_cores3 --skip-build
+  npm run firmware:package -- --target wio_terminal,sensecap_indicator --skip-build
 `);
 }
 
