@@ -35,11 +35,13 @@ const HARDWARE_PERSONA_FRAME_BYTES = HARDWARE_PERSONA_FRAME_WIDTH * HARDWARE_PER
 const HARDWARE_PERSONA_MAX_FRAMES = 2;
 const HARDWARE_PERSONA_CHUNK_CHARS = 360;
 const HARDWARE_PERSONA_CHUNK_DELAY_MS = 6;
+const HARDWARE_PERSONA_BINARY_CHUNK_BYTES = 180;
 const HARDWARE_OUTPUT_MAX_CHARS = 120;
 const BLUETOOTH_JSON_MAX_BYTES = 480;
 const BLUETOOTH_TITLE_MAX_BYTES = 48;
 const BLUETOOTH_DIRECT_WRITE_MAX_BYTES = 20;
 const BLUETOOTH_FRAGMENT_DATA_BYTES = 18;
+const BLUETOOTH_FRAGMENT_MAX_BYTES = 768;
 const TENCENT_AEGIS_LOCAL_SDK_URL = "../../node_modules/aegis-web-sdk/lib/aegis.min.js";
 const TENCENT_AEGIS_SDK_URL = "https://tam.cdn-go.cn/aegis-sdk/latest/aegis.min.js";
 const PETDEX_ROW_BY_STATE = {
@@ -416,12 +418,17 @@ function isWioBluetoothDevice() {
   return /^(VibePet|CodePet)-Wio/.test(bluetoothDeviceName());
 }
 
+function isEspAiMiniBluetoothDevice() {
+  return /^(VibePet|CodePet)-ESP-AI-Mini/i.test(bluetoothDeviceName());
+}
+
 function isAtlasBluetoothDevice() {
   return /^(VibePet|CodePet)-(ESP-AI|ESP-Display|SenseCAP)/.test(bluetoothDeviceName());
 }
 
 function hardwarePersonaTransferMode() {
   if (isWioBluetoothDevice()) return "frames";
+  if (isEspAiMiniBluetoothDevice()) return "frames";
   if (isAtlasBluetoothDevice()) return "atlas";
   return "";
 }
@@ -842,6 +849,10 @@ function compactBluetoothImagePayload(payload) {
 function bluetoothPayload(payload) {
   if (payload && payload.im) return compactBluetoothImagePayload(payload);
   return compactBluetoothStatePayload(payload);
+}
+
+function shouldFragmentBluetoothJson(bytes) {
+  return bytes.length > BLUETOOTH_DIRECT_WRITE_MAX_BYTES && isEspAiMiniBluetoothDevice();
 }
 
 function setAutoScrollingOutput(element, value) {
@@ -2760,6 +2771,10 @@ async function writeBluetoothJson(payload) {
   if (bytes.length > BLUETOOTH_JSON_MAX_BYTES && !(nextPayload && nextPayload.im)) {
     throw new Error(`BLE payload too large (${bytes.length} bytes).`);
   }
+  if (shouldFragmentBluetoothJson(bytes)) {
+    await writeBluetoothFragmentedBytes(characteristic, bytes);
+    return;
+  }
   try {
     await writeBluetoothBytes(characteristic, bytes);
   } catch (err) {
@@ -2785,6 +2800,9 @@ function nextBluetoothFragmentId() {
 }
 
 async function writeBluetoothFragmentedBytes(characteristic, bytes) {
+  if (bytes.length > BLUETOOTH_FRAGMENT_MAX_BYTES) {
+    throw new Error(`BLE fragmented payload too large (${bytes.length} bytes).`);
+  }
   const encoder = new TextEncoder();
   const id = nextBluetoothFragmentId();
   await writeBluetoothBytes(characteristic, encoder.encode(`#${id}:${bytes.length}`));
@@ -2797,6 +2815,18 @@ async function writeBluetoothFragmentedBytes(characteristic, bytes) {
     await writeBluetoothBytes(characteristic, packet);
   }
   await writeBluetoothBytes(characteristic, encoder.encode(`!${id}`));
+}
+
+async function writeBluetoothPersonaBinaryChunk(op, seq, bytes) {
+  const characteristic = stateCharacteristic;
+  if (!characteristic) throw new Error("No Bluetooth connection.");
+  const packet = new Uint8Array(4 + bytes.length);
+  packet[0] = 126;
+  packet[1] = op.charCodeAt(0);
+  packet[2] = seq & 0xff;
+  packet[3] = (seq >> 8) & 0xff;
+  packet.set(bytes, 4);
+  await writeBluetoothBytes(characteristic, packet);
 }
 
 function hardwarePersonaTransferTheme(packet) {
@@ -2865,6 +2895,47 @@ async function flushPendingHardwareStatusPacket(revision, signature) {
   setConnection(activeBluetoothConnectionMessage(), true);
 }
 
+async function sendHardwarePersonaAtlasBinaryChunks(atlas, id, revision, signature) {
+  let seq = 0;
+  for (let offset = 0; offset < atlas.bytes.length; offset += HARDWARE_PERSONA_BINARY_CHUNK_BYTES) {
+    if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return false;
+    try {
+      await writeBluetoothPersonaBinaryChunk(
+        "a",
+        seq,
+        atlas.bytes.subarray(offset, offset + HARDWARE_PERSONA_BINARY_CHUNK_BYTES)
+      );
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err || "BLE binary persona transfer failed.");
+      const transferError = new Error(message);
+      transferError.cause = err;
+      transferError.hardwarePersonaBinaryChunksSent = seq;
+      throw transferError;
+    }
+    seq++;
+    if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return false;
+    await sleep(HARDWARE_PERSONA_CHUNK_DELAY_MS);
+  }
+  return true;
+}
+
+async function sendHardwarePersonaAtlasJsonChunks(atlas, id, revision, signature) {
+  const base64 = bytesToBase64(atlas.bytes);
+  let seq = 0;
+  for (let offset = 0; offset < base64.length; offset += HARDWARE_PERSONA_CHUNK_CHARS) {
+    if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return false;
+    await writeBluetoothJson({
+      im: "ac",
+      id,
+      q: seq++,
+      d: base64.slice(offset, offset + HARDWARE_PERSONA_CHUNK_CHARS),
+    });
+    if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return false;
+    await sleep(HARDWARE_PERSONA_CHUNK_DELAY_MS);
+  }
+  return true;
+}
+
 async function sendHardwarePersonaAtlasBundle(hardwarePet, packet, revision, signature, showLoading, loadingSignature, forceTransfer = false) {
   if (!hardwarePet || !hardwarePet.persona) return;
   const persona = desktopPetPersona(hardwarePet.persona);
@@ -2922,18 +2993,13 @@ async function sendHardwarePersonaAtlasBundle(hardwarePet, packet, revision, sig
     if (spriteUrl) startPayload.u = spriteUrl;
     await writeBluetoothJson(startPayload);
 
-    const base64 = bytesToBase64(atlas.bytes);
-    let seq = 0;
-    for (let offset = 0; offset < base64.length; offset += HARDWARE_PERSONA_CHUNK_CHARS) {
-      if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return;
-      await writeBluetoothJson({
-        im: "ac",
-        id,
-        q: seq++,
-        d: base64.slice(offset, offset + HARDWARE_PERSONA_CHUNK_CHARS),
-      });
-      if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return;
-      await sleep(HARDWARE_PERSONA_CHUNK_DELAY_MS);
+    try {
+      if (!(await sendHardwarePersonaAtlasBinaryChunks(atlas, id, revision, signature))) return;
+    } catch (err) {
+      if (err && err.hardwarePersonaBinaryChunksSent > 0) throw err;
+      await abortHardwarePersonaTransfer(id).catch(() => {});
+      await writeBluetoothJson(startPayload);
+      if (!(await sendHardwarePersonaAtlasJsonChunks(atlas, id, revision, signature))) return;
     }
 
     if (await stopHardwarePersonaTransferIfCancelled(id, revision, signature)) return;
@@ -2944,6 +3010,9 @@ async function sendHardwarePersonaAtlasBundle(hardwarePet, packet, revision, sig
     lastHardwarePersonaImageKey = atlasKey;
     lastHardwarePersonaLoadingSignature = loadingSignature || "";
     rememberHardwarePersonaSync(signature, loadingSignature);
+  } catch (err) {
+    await abortHardwarePersonaTransfer(id).catch(() => {});
+    throw err;
   } finally {
     if (activeHardwarePersonaTransferId === id) activeHardwarePersonaTransferId = "";
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
@@ -3037,6 +3106,9 @@ async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, sig
     lastHardwarePersonaImageKey = frameSetKey;
     lastHardwarePersonaLoadingSignature = loadingSignature || "";
     rememberHardwarePersonaSync(signature, loadingSignature);
+  } catch (err) {
+    await abortHardwarePersonaTransfer(id).catch(() => {});
+    throw err;
   } finally {
     if (activeHardwarePersonaTransferId === id) activeHardwarePersonaTransferId = "";
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
