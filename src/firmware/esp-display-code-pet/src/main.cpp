@@ -113,6 +113,9 @@ extern Arduino_GFX *gfx;
 #ifndef CODE_PET_ANIMATION_FRAME_MS
 #define CODE_PET_ANIMATION_FRAME_MS 150
 #endif
+#ifndef CODE_PET_SYNC_PROGRESS_UI_MS
+#define CODE_PET_SYNC_PROGRESS_UI_MS 120
+#endif
 #ifndef CODE_PET_ARDUINO_GFX_AUTO_FLUSH
 #define CODE_PET_ARDUINO_GFX_AUTO_FLUSH 1
 #endif
@@ -269,6 +272,7 @@ static uint16_t lvStyleLabelInk = 0;
 static uint16_t lvStyleLabelMuted = 0;
 static uint16_t lvStyleLoadPanelBg = 0;
 static uint16_t lvStyleLoadTrackBg = 0;
+static uint16_t lvStyleLoadPercentInk = 0;
 static String lvHeaderTextCache = "";
 static String lvStatusTextCache = "";
 static String lvLoadTitleTextCache = "";
@@ -281,6 +285,10 @@ static lv_area_t lvFlushDirtyArea;
 static bool lvFlushDirtyAreaValid = false;
 static bool lvForceFullFlush = false;
 #endif
+static bool lvLoadingScreenVisible = false;
+static bool lvDirectLoadingScreenActive = false;
+static uint8_t lvLoadProgressCache = 255;
+static uint8_t lvDirectLoadProgressCache = 255;
 
 #if CODE_PET_LVGL_PRESCALE_IMAGE && defined(ESP32)
 static uint8_t *lvPrescaledPixels[2] = {nullptr, nullptr};
@@ -348,6 +356,7 @@ static bool dynamicPersonaShowLoading = true;
 static DynamicPersonaFormat dynamicPersonaFormat = DYNAMIC_PERSONA_RAW_RGB565;
 static uint16_t dynamicPersonaExpectedSeq = 0;
 static uint32_t dynamicPersonaReceived = 0;
+static uint32_t dynamicPersonaLastProgressUiAt = 0;
 static uint32_t dynamicPersonaTransferExpectedBytes = 0;
 static uint8_t dynamicPersonaFrameCount = 1;
 static uint8_t dynamicPersonaTransferFrameCount = 1;
@@ -584,7 +593,7 @@ static void setPremiumLabelHidden(lv_obj_t *label, lv_obj_t *shadow, bool hidden
 
 static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uint16_t muted,
                                   uint16_t accent, uint16_t labelInk, uint16_t labelMuted,
-                                  uint16_t loadPanelBg, uint16_t loadTrackBg) {
+                                  uint16_t loadPanelBg, uint16_t loadTrackBg, uint16_t loadPercentInk) {
   const bool first = !lvStyleCacheValid;
   if (first || lvStyleBg != bg) {
     lv_obj_set_style_bg_color(lv_scr_act(), lvColor(bg), 0);
@@ -601,8 +610,6 @@ static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uin
   if (first || lvStyleAccent != accent) {
     stylePremiumLabel(lvStatus, accent);
     stylePremiumShadow(lvStatusShadow, accent, LV_OPA_40);
-    stylePremiumLabel(lvLoadPercent, labelInk);
-    stylePremiumShadow(lvLoadPercentShadow, labelInk, LV_OPA_0);
     lv_obj_set_style_border_color(lvLoadPanel, lvColor(accent), 0);
     lv_obj_set_style_bg_color(lvLoadTrack, lvColor(accent), LV_PART_INDICATOR);
     lv_obj_set_style_text_color(lvFallbackState, lvColor(accent), 0);
@@ -620,6 +627,11 @@ static void updateLvPersonaStyles(uint16_t bg, uint16_t panel, uint16_t ink, uin
   if (first || lvStyleLoadTrackBg != loadTrackBg) {
     lv_obj_set_style_bg_color(lvLoadTrack, lvColor(loadTrackBg), LV_PART_MAIN);
     lvStyleLoadTrackBg = loadTrackBg;
+  }
+  if (first || lvStyleLoadPercentInk != loadPercentInk) {
+    stylePremiumLabel(lvLoadPercent, loadPercentInk);
+    stylePremiumShadow(lvLoadPercentShadow, loadPercentInk, LV_OPA_0);
+    lvStyleLoadPercentInk = loadPercentInk;
   }
   if (first || lvStylePanel != panel) {
     lv_obj_set_style_bg_color(lvFallback, lvColor(panel), 0);
@@ -644,14 +656,32 @@ static uint16_t swapRgb565RedBlue(uint16_t color) {
 #endif
 
 #if defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+#ifndef CODE_PET_CACHE_LINE_BYTES
+#define CODE_PET_CACHE_LINE_BYTES 32U
+#endif
+
+static bool writeBackLvFramebufferRange(uintptr_t address, uint32_t bytes) {
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(ESP32) && CONFIG_IDF_TARGET_ESP32S3 && CP_TFT_ROTATION == 0
+  if (!bytes) return true;
+  const uintptr_t lineMask = static_cast<uintptr_t>(CODE_PET_CACHE_LINE_BYTES - 1U);
+  const uintptr_t start = address & ~lineMask;
+  const uintptr_t end = (address + bytes + lineMask) & ~lineMask;
+  Cache_WriteBack_Addr(static_cast<uint32_t>(start), static_cast<uint32_t>(end - start));
+  return true;
+#else
+  (void)address;
+  (void)bytes;
+  return false;
+#endif
+}
+
 static bool flushFullLvFramebuffer() {
 #if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(ESP32) && CONFIG_IDF_TARGET_ESP32S3 && CP_TFT_ROTATION == 0
   Arduino_RGB_Display *rgb = static_cast<Arduino_RGB_Display *>(gfx);
   uint16_t *framebuffer = rgb ? rgb->getFramebuffer() : nullptr;
   if (!framebuffer) return false;
-  Cache_WriteBack_Addr(reinterpret_cast<uint32_t>(framebuffer),
-                       static_cast<uint32_t>(CP_TFT_WIDTH) * CP_TFT_HEIGHT * sizeof(uint16_t));
-  return true;
+  return writeBackLvFramebufferRange(reinterpret_cast<uintptr_t>(framebuffer),
+                                     static_cast<uint32_t>(CP_TFT_WIDTH) * CP_TFT_HEIGHT * sizeof(uint16_t));
 #else
   return false;
 #endif
@@ -687,8 +717,7 @@ static bool flushRememberedLvArea() {
   if (!framebuffer) return false;
   uint16_t *start = framebuffer + static_cast<uint32_t>(area.y1) * CP_TFT_WIDTH + area.x1;
   const uint32_t bytes = (static_cast<uint32_t>(CP_TFT_WIDTH) * (height - 1) + width) * sizeof(uint16_t);
-  Cache_WriteBack_Addr(reinterpret_cast<uint32_t>(start), bytes);
-  return true;
+  return writeBackLvFramebufferRange(reinterpret_cast<uintptr_t>(start), bytes);
 #else
   lvFlushDirtyAreaValid = false;
   return false;
@@ -722,6 +751,7 @@ static void lvFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
   rememberLvFlushArea(area);
   if (lv_disp_flush_is_last(disp)) {
     if (lvForceFullFlush) {
+      lvForceFullFlush = false;
       lvFlushDirtyAreaValid = false;
       if (!flushFullLvFramebuffer()) gfx->flush();
     } else if (!flushRememberedLvArea()) {
@@ -1061,13 +1091,19 @@ static String dynamicPersonaVisualState(const String &state) {
 }
 
 static bool dynamicPersonaLoadingFor(const String &slug, const String &visualState) {
-  if (!displayConnected() || !dynamicPersonaReceiving || !dynamicPersonaTransferSlug.length()) return false;
+  if (!displayConnected() || !dynamicPersonaShowLoading || !dynamicPersonaTransferSlug.length()) return false;
   if (dynamicPersonaAtlasReceiving) return true;
-  return dynamicPersonaTransferSlug == slug && dynamicPersonaTransferState == visualState;
+  if (dynamicPersonaTransferSlug != slug || dynamicPersonaTransferState != visualState) return false;
+  if (dynamicPersonaReceiving) return true;
+  uint8_t count = dynamicPersonaTransferFrameCount;
+  if (count < 1) count = 1;
+  if (count > 8) count = 8;
+  const uint8_t completeMask = (1U << count) - 1U;
+  return (dynamicPersonaReceivedFrameMask & completeMask) != completeMask;
 }
 
 static bool dynamicPersonaLoadingCurrent() {
-  if (!dynamicPersonaReceiving || !displayConnected()) return false;
+  if (!displayConnected()) return false;
   const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
   String slug = displayConnected() && pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
   String visualState = dynamicPersonaVisualState(normalizePacketState(pet.state));
@@ -1460,7 +1496,7 @@ static void ensureLvglUi() {
   lv_obj_set_style_border_width(lvLoadPanel, 0, 0);
   lv_obj_set_style_pad_all(lvLoadPanel, 0, 0);
   lv_obj_set_style_shadow_width(lvLoadPanel, 0, 0);
-  lv_obj_set_style_bg_opa(lvLoadPanel, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_bg_opa(lvLoadPanel, LV_OPA_COVER, 0);
   lv_obj_clear_flag(lvLoadPanel, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(lvLoadPanel, LV_OBJ_FLAG_HIDDEN);
 
@@ -1492,7 +1528,7 @@ static void ensureLvglUi() {
   lv_label_set_long_mode(lvLoadPercent, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(lvLoadPercent, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(lvLoadPercent, CODE_PET_LVGL_PROGRESS_FONT, 0);
-  lv_obj_set_style_text_opa(lvLoadPercent, LV_OPA_90, 0);
+  lv_obj_set_style_text_opa(lvLoadPercent, LV_OPA_COVER, 0);
   lv_obj_align(lvLoadPercent, LV_ALIGN_CENTER, 0, -8);
   setPremiumLabelText(lvLoadPercent, lvLoadPercentShadow, "");
 
@@ -1508,12 +1544,13 @@ static void ensureLvglUi() {
   lv_obj_set_style_pad_all(lvLoadTrack, 0, LV_PART_MAIN);
   lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_bg_opa(lvLoadTrack, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_anim_time(lvLoadTrack, 0, LV_PART_INDICATOR);
   lv_obj_clear_flag(lvLoadTrack, LV_OBJ_FLAG_SCROLLABLE);
   lvLoadFill = nullptr;
 }
 
 static uint8_t dynamicPersonaProgressPercent() {
-  if (!dynamicPersonaReceiving && dynamicPersonaReady) return 100;
+  if (!dynamicPersonaReceiving && dynamicPersonaReady && !dynamicPersonaTransferSlug.length()) return 100;
   uint8_t completeFrames = 0;
   if (!dynamicPersonaAtlasReceiving) {
     for (uint8_t i = 0; i < dynamicPersonaTransferFrameCount && i < 8; i++) {
@@ -1531,6 +1568,123 @@ static uint8_t dynamicPersonaProgressPercent() {
   if (received > total) received = total;
   return static_cast<uint8_t>((received * 100U) / total);
 }
+
+static void noteDynamicPersonaProgress(uint8_t progress) {
+  if (progress == dynamicPersonaLastProgressPercent) return;
+  dynamicPersonaLastProgressPercent = progress;
+  if (!dynamicPersonaShowLoading) return;
+
+  uint32_t now = millis();
+  if (progress == 0 || progress >= 100 ||
+      dynamicPersonaLastProgressUiAt == 0 ||
+      now - dynamicPersonaLastProgressUiAt >= CODE_PET_SYNC_PROGRESS_UI_MS) {
+    dynamicPersonaLastProgressUiAt = now;
+    markDirty();
+  }
+}
+
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+static void flushDirectLvFramebufferArea(int16_t x, int16_t y, int16_t w, int16_t h) {
+  if (w <= 0 || h <= 0) return;
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (x >= CP_TFT_WIDTH || y >= CP_TFT_HEIGHT || w <= 0 || h <= 0) return;
+  if (x + w > CP_TFT_WIDTH) w = CP_TFT_WIDTH - x;
+  if (y + h > CP_TFT_HEIGHT) h = CP_TFT_HEIGHT - y;
+  Arduino_RGB_Display *rgb = static_cast<Arduino_RGB_Display *>(gfx);
+  uint16_t *framebuffer = rgb ? rgb->getFramebuffer() : nullptr;
+  if (!framebuffer) {
+    gfx->flush();
+    return;
+  }
+  uint16_t *start = framebuffer + static_cast<uint32_t>(y) * CP_TFT_WIDTH + x;
+  const uint32_t bytes = (static_cast<uint32_t>(CP_TFT_WIDTH) * (h - 1) + w) * sizeof(uint16_t);
+  if (!writeBackLvFramebufferRange(reinterpret_cast<uintptr_t>(start), bytes)) gfx->flush();
+}
+
+static void drawDirectCenteredText(const String &text, int16_t y, uint8_t size, uint16_t color, uint16_t bg) {
+  const int16_t charW = 6 * size;
+  const int16_t textW = static_cast<int16_t>(text.length()) * charW;
+  const int16_t x = (screenW() - textW) / 2;
+  drawText(text, x, y, size, color, bg);
+}
+
+static void drawDirectLoadingProgress(uint8_t progress, bool full) {
+  const int16_t sw = screenW();
+  const int16_t sh = screenH();
+  const uint16_t bg = rgb565(6, 9, 15);
+  const uint16_t textColor = rgb565(246, 250, 255);
+  const uint16_t track = rgb565(56, 70, 92);
+  const uint16_t fill = rgb565(0, 154, 255);
+  const uint8_t textSize = sw >= 360 ? 4 : 3;
+  const int16_t textH = 8 * textSize;
+  const int16_t textRectW = sw >= 360 ? 220 : 160;
+  const int16_t textRectH = textH + 28;
+  const int16_t textRectX = (sw - textRectW) / 2;
+  const int16_t textRectY = (sh - textRectH) / 2 - 14;
+  const int16_t textY = textRectY + (textRectH - textH) / 2;
+  const int16_t barW = sw >= 360 ? sw - 128 : sw - 48;
+  const int16_t barH = sw >= 360 ? 12 : 10;
+  const int16_t barX = (sw - barW) / 2;
+  const int16_t barY = sh - 82;
+  const int16_t barPad = 6;
+  const int16_t barAreaX = barX - barPad;
+  const int16_t barAreaY = barY - barPad;
+  const int16_t barAreaW = barW + barPad * 2;
+  const int16_t barAreaH = barH + barPad * 2;
+  const int16_t fillW = static_cast<int16_t>((static_cast<uint32_t>(barW) * progress) / 100U);
+  const String progressText = String(progress) + "%";
+
+  if (full) {
+    fillScreen(bg);
+  } else {
+    fillRect(textRectX, textRectY, textRectW, textRectH, bg);
+    fillRect(barAreaX, barAreaY, barAreaW, barAreaH, bg);
+  }
+
+  drawDirectCenteredText(progressText, textY, textSize, textColor, bg);
+  fillRoundRect(barX, barY, barW, barH, barH / 2, track);
+  if (fillW > 0) fillRoundRect(barX, barY, fillW, barH, barH / 2, fill);
+
+  if (full) {
+    flushFullLvFramebuffer();
+  } else {
+    flushDirectLvFramebufferArea(textRectX, textRectY, textRectW, textRectH);
+    flushDirectLvFramebufferArea(barAreaX, barAreaY, barAreaW, barAreaH);
+  }
+}
+
+static bool renderDynamicPersonaLoadingDirect() {
+  if (!displayConnected()) return false;
+  const String fallbackSlug = String(CODE_PET_LVGL_FALLBACK_PERSONA_SLUG);
+  String slug = pet.personaSlug.length() ? pet.personaSlug : fallbackSlug;
+  String visualState = dynamicPersonaVisualState(normalizePacketState(pet.state));
+  if (!dynamicPersonaLoadingFor(slug, visualState)) {
+    if (lvDirectLoadingScreenActive) {
+      lvDirectLoadingScreenActive = false;
+      lvDirectLoadProgressCache = 255;
+      lvLoadingScreenVisible = true;
+    }
+    return false;
+  }
+
+  const uint8_t progress = dynamicPersonaProgressPercent();
+  const bool full = !lvDirectLoadingScreenActive || lvDirectLoadProgressCache == 255;
+  if (full || lvDirectLoadProgressCache != progress) {
+    drawDirectLoadingProgress(progress, full);
+    lvDirectLoadProgressCache = progress;
+  }
+  lvDirectLoadingScreenActive = true;
+  lvLoadingScreenVisible = true;
+  return true;
+}
+#endif
 
 static void setFooterTickerX(void *obj, int32_t value) {
   lv_obj_set_x(static_cast<lv_obj_t *>(obj), value);
@@ -1661,14 +1815,21 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
   const bool night = isNightTheme();
   const uint16_t labelInk = night ? rgb565(255, 255, 255) : rgb565(30, 40, 54);
   const uint16_t labelMuted = night ? rgb565(232, 238, 248) : rgb565(38, 49, 66);
-  const uint16_t loadPanelBg = night ? rgb565(8, 10, 14) : panel;
-  const uint16_t loadTrackBg = night ? rgb565(36, 42, 54) : rgb565(224, 230, 238);
-  updateLvPersonaStyles(bg, panel, ink, muted, accent, labelInk, labelMuted, loadPanelBg, loadTrackBg);
+  const uint16_t loadPanelBg = night ? rgb565(6, 9, 15) : rgb565(12, 18, 28);
+  const uint16_t loadTrackBg = night ? rgb565(44, 52, 66) : rgb565(64, 76, 96);
+  const uint16_t loadPercentInk = rgb565(238, 246, 255);
+  updateLvPersonaStyles(bg, panel, ink, muted, accent, labelInk, labelMuted, loadPanelBg, loadTrackBg, loadPercentInk);
+  const bool loadingVisibilityChanged = imageLoading != lvLoadingScreenVisible;
 #if defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
-  lvForceFullFlush = imageLoading;
+  lvForceFullFlush = loadingVisibilityChanged;
 #endif
+  if (loadingVisibilityChanged && lvRoot) lv_obj_invalidate(lvRoot);
 
   if (imageLoading) {
+    if (!lvLoadingScreenVisible) {
+      lvLoadProgressCache = 255;
+      lvLoadPercentTextCache = "";
+    }
     setPremiumLabelHidden(lvHeader, lvHeaderShadow, true);
     setPremiumLabelHidden(lvStatus, lvStatusShadow, true);
     updateFooterTicker(String(""), connected);
@@ -1679,14 +1840,20 @@ static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, 
 
     String progressText = String(imageProgress) + "%";
     setPremiumLabelTextIfChanged(lvLoadPercent, lvLoadPercentShadow, lvLoadPercentTextCache, progressText);
-    lv_bar_set_value(lvLoadTrack, imageProgress, LV_ANIM_OFF);
+    if (lvLoadProgressCache != imageProgress) {
+      lv_bar_set_value(lvLoadTrack, imageProgress, LV_ANIM_OFF);
+      lvLoadProgressCache = imageProgress;
+    }
     setLvHidden(lvLoadPanel, false);
+    lvLoadingScreenVisible = true;
     return true;
   }
 
   setPremiumLabelHidden(lvHeader, lvHeaderShadow, false);
   setPremiumLabelHidden(lvStatus, lvStatusShadow, false);
   setLvHidden(lvLoadPanel, true);
+  lvLoadingScreenVisible = false;
+  lvLoadProgressCache = 255;
 
   String headerText = connected ? cleanText(pet.agent, 22) : "";
   setPremiumLabelTextIfChanged(lvHeader, lvHeaderShadow, lvHeaderTextCache, headerText);
@@ -2047,6 +2214,12 @@ static void renderScreen() {
   uint16_t accent = oled ? 1 : stateColor(pet.state);
 
 #if defined(CODE_PET_USE_COLOR_LVGL)
+#if defined(CODE_PET_USE_SENSECAP_INDICATOR) && defined(CODE_PET_DISPLAY_ARDUINO_GFX) && CODE_PET_ARDUINO_GFX_PARTIAL_FLUSH
+  if (!oled && renderDynamicPersonaLoadingDirect()) {
+    uiDirty = false;
+    return;
+  }
+#endif
   if (!oled && renderPersonaWithLvgl(bg, header, panel, ink, muted, accent)) {
     lv_timer_handler();
     uiDirty = false;
@@ -2156,6 +2329,7 @@ static void clearDynamicPersonaFrame() {
   dynamicPersonaTransferFrameIndex = 0;
   dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
+  dynamicPersonaLastProgressUiAt = 0;
   dynamicPersonaRleIndex = 0;
   dynamicPersonaAtlasWidth = 0;
   dynamicPersonaAtlasHeight = 0;
@@ -2404,6 +2578,7 @@ static bool loadDynamicPersonaAtlasStateFrames(const String &state) {
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaRleIndex = 0;
   dynamicPersonaLastProgressPercent = 100;
+  dynamicPersonaLastProgressUiAt = 0;
   return true;
 }
 
@@ -2437,6 +2612,7 @@ static bool loadDynamicPersonaStateFrames(const String &state) {
   dynamicPersonaExpectedSeq = 0;
   dynamicPersonaRleIndex = 0;
   dynamicPersonaLastProgressPercent = 100;
+  dynamicPersonaLastProgressUiAt = 0;
   return true;
 }
 
@@ -2578,6 +2754,7 @@ static void abortDynamicPersonaTransfer() {
   dynamicPersonaTransferFrameIndex = 0;
   dynamicPersonaReceivedFrameMask = 0;
   dynamicPersonaLastProgressPercent = 0;
+  dynamicPersonaLastProgressUiAt = 0;
   dynamicPersonaRleIndex = 0;
 #if defined(ESP32)
   if (dynamicPersonaAtlasWriteFile) dynamicPersonaAtlasWriteFile.close();
@@ -2734,10 +2911,7 @@ static void applyDynamicPersonaBinaryPayload(const std::string &value) {
     }
     dynamicPersonaExpectedSeq++;
     uint8_t progress = dynamicPersonaProgressPercent();
-    if (progress != dynamicPersonaLastProgressPercent) {
-      dynamicPersonaLastProgressPercent = progress;
-      if (dynamicPersonaShowLoading) markDirty();
-    }
+    noteDynamicPersonaProgress(progress);
   }
 }
 
@@ -2815,6 +2989,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     dynamicPersonaTransferFrameIndex = 0;
     dynamicPersonaReceivedFrameMask = 0;
     dynamicPersonaLastProgressPercent = 0;
+    dynamicPersonaLastProgressUiAt = 0;
     dynamicPersonaRleIndex = 0;
     dynamicPersonaAtlasWidth = static_cast<uint16_t>(atlasWidth);
     dynamicPersonaAtlasHeight = static_cast<uint16_t>(atlasHeight);
@@ -2846,10 +3021,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     }
     dynamicPersonaExpectedSeq++;
     uint8_t progress = dynamicPersonaProgressPercent();
-    if (progress != dynamicPersonaLastProgressPercent) {
-      dynamicPersonaLastProgressPercent = progress;
-      if (dynamicPersonaShowLoading) markDirty();
-    }
+    noteDynamicPersonaProgress(progress);
     return;
   }
 
@@ -2888,6 +3060,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
       dynamicPersonaTransferSlug = "";
       dynamicPersonaTransferState = "idle";
       dynamicPersonaLastProgressPercent = 100;
+      dynamicPersonaLastProgressUiAt = 0;
       writeDynamicPersonaAtlasMeta();
       markDirty();
     } else {
@@ -2954,6 +3127,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     dynamicPersonaReceived = 0;
     dynamicPersonaTransferExpectedBytes = static_cast<uint32_t>(frameCount) * CODE_PET_DYNAMIC_PERSONA_BYTES;
     dynamicPersonaLastProgressPercent = 0;
+    dynamicPersonaLastProgressUiAt = 0;
     dynamicPersonaRleIndex = 0;
     String previousPersonaSlug = pet.personaSlug;
     pet.personaSlug = slug;
@@ -2987,10 +3161,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
     }
     dynamicPersonaExpectedSeq++;
     uint8_t progress = dynamicPersonaProgressPercent();
-    if (progress != dynamicPersonaLastProgressPercent) {
-      dynamicPersonaLastProgressPercent = progress;
-      if (dynamicPersonaShowLoading) markDirty();
-    }
+    noteDynamicPersonaProgress(progress);
     return;
   }
 
@@ -3015,6 +3186,7 @@ static void applyDynamicPersonaPayload(JsonVariantConst src) {
         dynamicPersonaTransferSlug = "";
         dynamicPersonaTransferState = dynamicPersonaState;
         dynamicPersonaLastProgressPercent = 100;
+        dynamicPersonaLastProgressUiAt = 0;
         saveDynamicPersonaFrame();
         String currentState = dynamicPersonaVisualState(pet.state);
         if (currentState != dynamicPersonaState) loadDynamicPersonaStateFrames(currentState);
@@ -3491,7 +3663,7 @@ void loop() {
   }
 
 #if defined(CODE_PET_USE_COLOR_LVGL)
-  if (!uiDirty) lv_timer_handler();
+  if (!uiDirty && !lvDirectLoadingScreenActive) lv_timer_handler();
 #endif
   if (uiDirty) renderScreen();
 }
