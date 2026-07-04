@@ -68,6 +68,14 @@ const FIRMWARE_ROOT = path.join(PROJECT_ROOT, "src", "firmware");
 const firmwareProject = (name) => path.join(FIRMWARE_ROOT, name);
 const MAIN_BIN_NAME = "main.bin";
 const FIRMWARE_TARGETS = {
+  sensecap_indicator: {
+    id: "sensecap_indicator",
+    name: "SenseCAP Indicator",
+    projectDir: firmwareProject("sensecap-indicator-code-pet"),
+    flasher: "esp",
+    firmwareFile: MAIN_BIN_NAME,
+    flashAddress: 0x0,
+  },
   wio_terminal: {
     id: "wio_terminal",
     name: "Wio Terminal",
@@ -78,32 +86,8 @@ const FIRMWARE_TARGETS = {
   },
   esp_ai_mini_ext_tft: {
     id: "esp_ai_mini_ext_tft",
-    name: "ESP-AI-MINI AI开发套件",
+    name: "Vibe Pet",
     projectDir: firmwareProject("esp-ai-mini-ext-tft-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  esp_ai_common_3_tft: {
-    id: "esp_ai_common_3_tft",
-    name: "ESP-AI v3 开发板",
-    projectDir: firmwareProject("esp-ai-v3-tft-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  esp_ai_common_4_tft: {
-    id: "esp_ai_common_4_tft",
-    name: "ESP-AI v4开发板",
-    projectDir: firmwareProject("esp-ai-v3-tft-code-pet"),
-    flasher: "esp",
-    firmwareFile: MAIN_BIN_NAME,
-    flashAddress: 0x0,
-  },
-  m5stack_cores3: {
-    id: "m5stack_cores3",
-    name: "M5Stack CoreS3",
-    projectDir: firmwareProject("m5stack-cores3-code-pet"),
     flasher: "esp",
     firmwareFile: MAIN_BIN_NAME,
     flashAddress: 0x0,

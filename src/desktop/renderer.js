@@ -8,6 +8,8 @@ const BLUETOOTH_AUTO_CONNECT_RETRY_DELAYS = [600, 1500, 3000, 5000, 8000, 13000,
 const BLUETOOTH_AUTO_CONNECT_SCAN_TIMEOUT_MS = 6500;
 const PET_SELECTION_STORAGE_KEY = "code-pet-personas";
 const PET_CACHE_STORAGE_KEY = "code-pet-persona-cache";
+const HARDWARE_PERSONA_SYNC_STORAGE_KEY = "code-pet-hardware-persona-sync";
+const HARDWARE_PERSONA_SYNC_CACHE_LIMIT = 12;
 const LEGACY_BUILTIN_PET_SLUGS = new Set(["code-pet"]);
 const BUILTIN_PET = {
   slug: "lulu-capybara-2",
@@ -343,6 +345,7 @@ let manualDisconnectInFlight = false;
 let pendingDisconnectConfirm = null;
 let petSelections = loadPetSelections();
 let cachedPetdexPetsBySlug = loadCachedPetdexPets();
+let hardwarePersonaSyncCache = loadHardwarePersonaSyncCache();
 let petdexPets = [];
 let petdexPetsBySlug = new Map();
 let petdexLoaded = false;
@@ -954,6 +957,81 @@ function saveCachedPetdexPets() {
   } catch {}
 }
 
+function normalizeHardwarePersonaSyncRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const signatureKey = typeof record.signatureKey === "string" ? record.signatureKey : "";
+  if (!signatureKey) return null;
+  return {
+    signatureKey,
+    updatedAt: Number(record.updatedAt) || 0,
+  };
+}
+
+function loadHardwarePersonaSyncCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HARDWARE_PERSONA_SYNC_STORAGE_KEY) || "{}");
+    const devices = parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.devices
+      ? parsed.devices
+      : parsed;
+    if (!devices || typeof devices !== "object" || Array.isArray(devices)) return {};
+    const out = {};
+    for (const [deviceKey, record] of Object.entries(devices)) {
+      if (!deviceKey) continue;
+      const normalized = normalizeHardwarePersonaSyncRecord(record);
+      if (normalized) out[deviceKey] = normalized;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveHardwarePersonaSyncCache() {
+  try {
+    const entries = Object.entries(hardwarePersonaSyncCache)
+      .map(([deviceKey, record]) => [deviceKey, normalizeHardwarePersonaSyncRecord(record)])
+      .filter(([deviceKey, record]) => deviceKey && record)
+      .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+      .slice(0, HARDWARE_PERSONA_SYNC_CACHE_LIMIT);
+    hardwarePersonaSyncCache = Object.fromEntries(entries);
+    localStorage.setItem(HARDWARE_PERSONA_SYNC_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      devices: hardwarePersonaSyncCache,
+    }));
+  } catch {}
+}
+
+function hardwarePersonaSyncCacheKey(signature) {
+  if (!signature) return "";
+  const text = String(signature);
+  return `${hardwarePersonaTransferId(text)}:${text.length}`;
+}
+
+function restoreHardwarePersonaSyncFromCache(deviceKey, signature, loadingSignature) {
+  const signatureKey = hardwarePersonaSyncCacheKey(signature);
+  if (!deviceKey || !signatureKey) return false;
+  const record = normalizeHardwarePersonaSyncRecord(hardwarePersonaSyncCache[deviceKey]);
+  if (!record || record.signatureKey !== signatureKey) return false;
+  hardwarePersonaCacheDeviceKey = deviceKey;
+  latestHardwarePersonaRequestSignature = signature;
+  lastHardwarePersonaImageKey = `cached:${signatureKey}`;
+  lastHardwarePersonaLoadingSignature = loadingSignature || "";
+  return true;
+}
+
+function rememberHardwarePersonaSync(signature, loadingSignature) {
+  const deviceKey = bluetoothDeviceCacheKey(device);
+  const signatureKey = hardwarePersonaSyncCacheKey(signature);
+  if (!deviceKey || !signatureKey) return;
+  hardwarePersonaCacheDeviceKey = deviceKey;
+  if (loadingSignature !== undefined) lastHardwarePersonaLoadingSignature = loadingSignature || "";
+  hardwarePersonaSyncCache[deviceKey] = {
+    signatureKey,
+    updatedAt: Date.now(),
+  };
+  saveHardwarePersonaSyncCache();
+}
+
 function cachePetdexPet(pet) {
   const normalized = normalizePetdexPet(pet);
   if (!normalized || normalized.slug === BUILTIN_PET.slug) return;
@@ -990,7 +1068,7 @@ async function ensurePetdexPets(options = {}) {
     renderPetPickerModal();
     renderSnapshot(latestSnapshot);
     if (stateCharacteristic) {
-      sendCurrent({ ensurePersonaSync: true }).catch(setBluetoothSendFailed);
+      sendCurrent({ ensurePersonaSync: !!options.force }).catch(setBluetoothSendFailed);
     }
   }
 }
@@ -1905,6 +1983,18 @@ function createPetElement(state, persona = BUILTIN_PET) {
   return pet;
 }
 
+function createPetOutputTicker(text) {
+  const ticker = document.createElement("div");
+  ticker.className = "pet-stage-output";
+  ticker.title = text;
+
+  const content = document.createElement("span");
+  content.className = "pet-stage-output-content";
+  content.textContent = text;
+  ticker.append(content);
+  return ticker;
+}
+
 function createPetThumb(persona) {
   const thumb = document.createElement("span");
   thumb.className = "pet-choice-thumb";
@@ -2020,7 +2110,7 @@ function renderPetGrid(views) {
     const card = document.createElement("article");
     card.className = "pet-card";
     card.dataset.state = packet.s || "idle";
-    const outputText = String((view.data && view.data.output) || "").trim();
+    const outputText = String((view.data && view.data.output) || packet.o || "").trim();
     card.dataset.hasOutput = outputText ? "true" : "false";
 
     const ideBadge = createIdeBadge(view, packet);
@@ -2048,6 +2138,7 @@ function renderPetGrid(views) {
     const petBox = document.createElement("div");
     petBox.className = "pet-card-stage";
     petBox.append(createPetElement(packet.s, persona));
+    if (outputText) petBox.append(createPetOutputTicker(outputText));
 
     const meta = document.createElement("div");
     meta.className = "pet-card-meta";
@@ -2057,13 +2148,6 @@ function renderPetGrid(views) {
     state.textContent = stateLabel(packet.s);
     state.title = packet.s || "idle";
     meta.append(state);
-
-    if (outputText) {
-      const output = document.createElement("p");
-      output.className = "pet-card-output auto-scroll-output";
-      setAutoScrollingOutput(output, outputText);
-      meta.append(output);
-    }
 
     card.append(head, petBox, meta);
     petGrid.append(card);
@@ -2802,6 +2886,7 @@ async function sendHardwarePersonaAtlasBundle(hardwarePet, packet, revision, sig
   }
   const atlasKey = atlas.key;
   if (!forceTransfer && atlasKey === lastHardwarePersonaImageKey) {
+    rememberHardwarePersonaSync(signature, loadingSignature);
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
     return;
   }
@@ -2858,7 +2943,7 @@ async function sendHardwarePersonaAtlasBundle(hardwarePet, packet, revision, sig
     if (isHardwarePersonaTransferCancelled(id, revision, signature)) return;
     lastHardwarePersonaImageKey = atlasKey;
     lastHardwarePersonaLoadingSignature = loadingSignature || "";
-    hardwarePersonaCacheDeviceKey = bluetoothDeviceCacheKey(device);
+    rememberHardwarePersonaSync(signature, loadingSignature);
   } finally {
     if (activeHardwarePersonaTransferId === id) activeHardwarePersonaTransferId = "";
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
@@ -2888,6 +2973,7 @@ async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, sig
   }
   const frameSetKey = bundle.map((entry) => `${entry.state}:${entry.frames.map((frame) => frame.key).join("~")}`).join("||");
   if (!forceTransfer && frameSetKey === lastHardwarePersonaImageKey) {
+    rememberHardwarePersonaSync(signature, loadingSignature);
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
     return;
   }
@@ -2950,7 +3036,7 @@ async function sendHardwarePersonaFrameBundle(hardwarePet, packet, revision, sig
     if (isHardwarePersonaTransferCancelled(id, revision, signature)) return;
     lastHardwarePersonaImageKey = frameSetKey;
     lastHardwarePersonaLoadingSignature = loadingSignature || "";
-    hardwarePersonaCacheDeviceKey = bluetoothDeviceCacheKey(device);
+    rememberHardwarePersonaSync(signature, loadingSignature);
   } finally {
     if (activeHardwarePersonaTransferId === id) activeHardwarePersonaTransferId = "";
     if (activeHardwarePersonaTransferSignature === signature) activeHardwarePersonaTransferSignature = "";
@@ -2967,17 +3053,19 @@ async function sendCurrent(options = {}) {
   const sendSequence = ++hardwareSendSequence;
   const transferSignature = hardwarePersonaTransferSignature(hardwarePet, packet);
   const loadingSignature = hardwarePersonaLoadingSignature(hardwarePet, packet);
+  const hardwarePersonaDeviceKey = bluetoothDeviceCacheKey(device);
   let transferRevision = hardwarePersonaTransferRevision;
-  let shouldSendPersonaFrame = !!transferSignature && (ensurePersonaSync || !lastHardwarePersonaImageKey);
-  let shouldShowPersonaLoading = !!transferSignature && loadingSignature !== lastHardwarePersonaLoadingSignature;
   if (transferSignature !== latestHardwarePersonaRequestSignature) {
     cancelActiveHardwarePersonaTransfer();
     latestHardwarePersonaRequestSignature = transferSignature;
     transferRevision = ++hardwarePersonaTransferRevision;
     lastHardwarePersonaImageKey = "";
-    shouldSendPersonaFrame = !!transferSignature;
-    shouldShowPersonaLoading = !!transferSignature && loadingSignature !== lastHardwarePersonaLoadingSignature;
   }
+  if (!ensurePersonaSync && !lastHardwarePersonaImageKey) {
+    restoreHardwarePersonaSyncFromCache(hardwarePersonaDeviceKey, transferSignature, loadingSignature);
+  }
+  const shouldSendPersonaFrame = !!transferSignature && (ensurePersonaSync || !lastHardwarePersonaImageKey);
+  const shouldShowPersonaLoading = !!transferSignature && loadingSignature !== lastHardwarePersonaLoadingSignature;
   const sameActivePersonaTransfer = transferSignature &&
     transferSignature === latestHardwarePersonaRequestSignature &&
     transferSignature === activeHardwarePersonaTransferSignature;

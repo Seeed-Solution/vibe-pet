@@ -1726,27 +1726,51 @@ static void updateFooterTicker(const String &text, bool connected) {
     return;
   }
 
+  const bool wasDisconnectedMode = lvFooterDisconnectedMode;
   lvFooterDisconnectedMode = false;
-  if (text == lvFooterTickerText) {
+  if (!wasDisconnectedMode && text == lvFooterTickerText) {
     setLvHidden(lvFooterClip, false);
     return;
   }
 
   lv_anim_del(lvFooter, setFooterTickerX);
   lvFooterTickerText = text;
-  lvFooterTickerDone = true;
+  lvFooterTickerDone = false;
   setLvHidden(lvFooterClip, false);
-  lv_obj_set_width(lvFooter, lv_obj_get_width(lvFooterClip));
-  if (lvFooterShadow) lv_obj_set_width(lvFooterShadow, lv_obj_get_width(lvFooterClip));
-  lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_DOT);
-  if (lvFooterShadow) lv_label_set_long_mode(lvFooterShadow, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_CENTER, 0);
-  if (lvFooterShadow) lv_obj_set_style_text_align(lvFooterShadow, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(lvFooter, LV_SIZE_CONTENT);
+  if (lvFooterShadow) lv_obj_set_width(lvFooterShadow, LV_SIZE_CONTENT);
+  lv_label_set_long_mode(lvFooter, LV_LABEL_LONG_CLIP);
+  if (lvFooterShadow) lv_label_set_long_mode(lvFooterShadow, LV_LABEL_LONG_CLIP);
+  lv_obj_set_style_text_align(lvFooter, LV_TEXT_ALIGN_LEFT, 0);
+  if (lvFooterShadow) lv_obj_set_style_text_align(lvFooterShadow, LV_TEXT_ALIGN_LEFT, 0);
   setPremiumLabelText(lvFooter, lvFooterShadow, text.c_str());
-  lv_obj_align(lvFooter, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_update_layout(lvFooter);
+  if (lvFooterShadow) lv_obj_update_layout(lvFooterShadow);
+
+  int16_t clipWidth = lv_obj_get_width(lvFooterClip);
+  int16_t textWidth = lv_obj_get_width(lvFooter);
+  if (textWidth <= 0) textWidth = clipWidth;
+  int16_t startX = clipWidth;
+  int16_t endX = -textWidth;
+  uint32_t distance = static_cast<uint32_t>(clipWidth + textWidth);
+  uint32_t duration = (distance * 1000U) / 72U;
+  if (duration < 3600U) duration = 3600U;
+
+  lv_obj_set_y(lvFooter, 1);
+  lv_obj_set_x(lvFooter, startX);
   if (lvFooterShadow) {
-    lv_obj_align(lvFooterShadow, LV_ALIGN_CENTER, 1, 1);
+    lv_obj_set_y(lvFooterShadow, 2);
+    lv_obj_set_x(lvFooterShadow, startX + 1);
   }
+
+  lv_anim_t anim;
+  lv_anim_init(&anim);
+  lv_anim_set_var(&anim, lvFooter);
+  lv_anim_set_exec_cb(&anim, setFooterTickerX);
+  lv_anim_set_values(&anim, startX, endX);
+  lv_anim_set_time(&anim, duration);
+  lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_start(&anim);
 }
 
 static bool renderPersonaWithLvgl(uint16_t bg, uint16_t header, uint16_t panel, uint16_t ink, uint16_t muted, uint16_t accent) {
