@@ -90,6 +90,22 @@ Download the installer for your platform from the [Releases page](https://github
 
 After installation, launch Vibe Pet and use the desktop app to connect your device. You can also use Vibe Pet without hardware if you only want the desktop pets.
 
+## FAQ
+
+### macOS says "Vibe Pet" is damaged and can't be opened
+
+This is a Gatekeeper block (unsigned or not notarized build), not a runtime crash. Remove the quarantine attribute and try again:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Vibe Pet.app"
+```
+
+If needed, re-sign locally:
+
+```bash
+sudo codesign --force --deep --sign - "/Applications/Vibe Pet.app"
+```
+
 ## Technical Documentation
 
 - Project structure, local endpoints, BLE / Wi-Fi behavior, and hook mapping are documented in [AGENT.MD](AGENT.MD)

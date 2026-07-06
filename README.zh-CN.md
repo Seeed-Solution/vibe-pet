@@ -93,6 +93,22 @@ Vibe Pet 会默认尝试同步这些 AI 编程助手的 hooks 或插件配置：
 
 安装后启动 Vibe Pet，并在桌面程序中连接设备。如果你只是想先看桌面宠物效果，不连接硬件也可以直接使用。
 
+## 常见问题
+
+### macOS 提示“Vibe Pet”已损坏，无法打开
+
+这是 Gatekeeper 拦截（未签名或未公证），不是程序运行崩溃。先移除隔离属性再打开：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Vibe Pet.app"
+```
+
+如果还不行，再执行本地签名：
+
+```bash
+sudo codesign --force --deep --sign - "/Applications/Vibe Pet.app"
+```
+
 ## 技术文档
 
 - 更详细的目录结构、端点和 hook 行为见 [AGENT.MD](AGENT.MD)
