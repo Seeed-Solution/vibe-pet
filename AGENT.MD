@@ -1,246 +1,294 @@
-# Vibe Pet
+# Vibe Pet — Agent Guide
 
-硬件桌宠项目：读取多种 coding agent 状态，在电脑侧归一成桌宠状态，再通过 BLE 下发到 Wio Terminal 或 ESP-AI Mini Ext。
+> 面向 **Cursor**、**Codex** 及其他 AI coding agent 的本仓库工作指南。  
+> 修改代码前先读本文；协议细节见 `docs/`。
 
-这个仓库参考了 [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk) 的 agent 状态映射思路：Codex 优先读 `~/.codex/sessions/**/rollout-*.jsonl`，其他 CLI/IDE 通过各自 hook 或插件上报。ESP-AI Mini Ext 是基于 ESP32-S3 的 AI 开发套件，官方资料见 [ESP-AI Mini Ext v1.0.0](https://espai.fun/open/pcb/mini-ext/1.0.0/)，固定引脚来自 [esp-ai-mini-ext 1.0.0](https://espai.fun/skills/esp-ai-mini-ext-1.0.0.md)。
+## 快速索引
 
-## 项目结构
+| 项目 | 值 |
+| --- | --- |
+| 产品名 | Vibe Pet |
+| npm 包名 | `vibe-pet` |
+| 当前版本 | `1.7.0` |
+| 运行时 | Electron + Node.js ≥ 18 |
+| 主入口 | `src/desktop/main.js` |
+| 本地 bridge 默认端口 | `17384` |
+| 运行时端口文件 | `~/.code-pet/runtime.json` |
+| 协议文档 | [IDE/Agent](docs/ide-protocol.md) · [硬件](docs/hardware-protocol.md) |
+
+## 架构
 
 ```text
-src/desktop/                 Electron 桌面桥
-src/host/                    本地 hook HTTP 服务与状态聚合
-src/host/agent/              Codex JSONL 状态监听
-src/host/public/             备用 Web Bluetooth 桥接页面与共享样式
-src/hooks/                   Codex / Cursor / Windsurf hook 脚本
-src/hooks/agent-hook.js      多 agent 通用 hook 脚本
-src/scripts/install-hooks.js hook 安装与卸载
-src/firmware/wio-terminal-code-pet/
-                             Wio Terminal BLE 显示端
-src/firmware/esp-ai-mini-ext-tft-code-pet/
-                             ESP-AI Mini Ext BLE TFT 显示端
-src/firmware/sensecap-indicator-code-pet/
-                             SenseCAP Indicator BLE 显示端
-src/firmware/esp-ai-mini-ext-status/
-                             ESP-AI Mini Ext BLE 状态灯端
-src/firmware/esp-display-code-pet/
-                             ESP-AI / M5Stack / LILYGO / Heltec / ESP8266 OLED 显示端
-docs/protocol.md             BLE / Wi-Fi 硬件协议
+IDE/CLI hooks ──┐
+Codex JSONL ────┼──► StateHub (src/host/state-hub.js)
+Cursor DB/logs ─┘         │
+                          ├──► 主窗口桌宠网格 (src/desktop/)
+                          ├──► 桌面浮动桌宠 (pet-overlay)
+                          ├──► BLE 写入 (Electron 主进程)
+                          └──► GET /api/device-snapshot (Wi-Fi 轮询)
 ```
 
-## 快速开始
+- **桌面桥**：Electron 主进程启动 `src/host/` HTTP 服务，负责 hook 上报、状态聚合、Petdex 代理；渲染进程负责 UI 与 BLE。
+- **StateHub**：会话 key 为 `agentId:sessionId`；多会话聚合后下发硬件。
+- **Petdex**：角色 manifest 来自 `https://petdex.dev/api/manifest`，经 `/api/petdex/manifest` 缓存代理。
 
-1. 安装并同步 hooks：
+参考项目：[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk) 的状态映射思路。
+
+## 目录结构
+
+```text
+src/desktop/                         Electron 桌面应用（主窗口 + 浮动桌宠 + BLE + 烧录）
+src/host/                            本地 HTTP bridge 与 StateHub
+src/host/agent/                      后台监听器（Codex JSONL / Cursor composer / transcript / presence）
+src/host/public/                     备用 Web Bluetooth 桥 UI
+src/hooks/                           各 agent 的 hook / plugin 脚本
+  agent-hook.js                      通用 CLI hook 入口
+  cursor-hook.js                     Cursor 专用 hook
+  codex-hook.js                      Codex 专用 hook
+src/scripts/                         安装、打包、检查、固件打包脚本
+src/firmware/
+  wio-terminal-code-pet/             Wio Terminal（BLE）
+  esp-ai-mini-ext-tft-code-pet/      ESP-AI Mini Ext TFT（BLE）
+  sensecap-indicator-code-pet/       SenseCAP Indicator（BLE）
+  esp-display-code-pet/              多板型显示固件（BLE / Wi-Fi）
+docs/                                协议与贡献文档
+scripts/install.{sh,ps1,cmd}         跨平台一键安装
+```
+
+## 常用命令
 
 ```bash
-npm install
+npm install              # 安装依赖并同步 hooks/plugins
+npm start                # 启动桌面应用
+npm run dev              # 热更新开发（监听 src/desktop + src/host）
+npm run check            # 项目检查
+npm run install:hooks    # 手动同步 hooks/plugins
+npm run uninstall:hooks  # 卸载 hooks/plugins
+npm run bridge:web       # 仅启动 Web 桥（无 Electron）
+npm run firmware:package # 打包各硬件 main.bin
+npm run build            # electron-builder 安装包（当前平台）
+npm run package:current  # Electron Packager 未签名应用包 → dist/
 ```
 
-`npm install`、`npm start` 和 `npm run dev` 都会默认自动同步 hooks/plugins。Codex 安装后可能需要在 Codex CLI 中运行 `/hooks` 并批准新命令。需要手动重装时仍可运行 `npm run install:hooks`。
+端口覆盖：`CODE_PET_PORT=17385 npm start` 或 `npm start -- --port 17385`
 
-跨平台一键安装：
+跳过 hook 同步：`VIBE_PET_SKIP_HOOKS=1 npm start`
 
-```bash
-# macOS / Linux
-./scripts/install.sh
+## 给 Cursor 的工作说明
 
-# Windows PowerShell
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+### 集成位置
 
-# Windows CMD
-scripts\install.cmd
-```
-
-安装脚本会检查 Node.js 版本、安装 npm 依赖，并同步 hooks/plugins。可加 `--start` 安装后启动应用，或加 `--dev` 进入热更新开发模式。
-
-2. 开发时烧录 Wio Terminal 固件：
-
-```bash
-cd src/firmware/wio-terminal-code-pet
-pio run -e wio_terminal -t upload
-
-# 上次指定端口
-# ls /dev/cu.usb*
-# pio run -e wio_terminal -t upload --upload-port /dev/cu.usbmodemXXXX
-
-```
-
-3. 启动桌面桥：
-
-```bash
-npm start
-```
-
-4. 在桌面窗口里点击「连接设备」，选择 `VibePet-Wio`。之后 Codex / Cursor / Windsurf 状态变化会自动写入设备。
-
-桌面窗口顶部会显示 `Vibe Pet` 和项目 GitHub Star 角标。中间是桌宠格子视图，每个 Codex、Cursor、Windsurf 或其他 agent 会话都会生成自己的宠物卡片。每张卡片右上角可以单独切换形象，列表来自 Petdex 的公开 manifest，并把选择保存在本地。即使 Cursor / Codex / Windsurf 已启动但还没触发 hook，桌面桥也会先显示一个 idle 的 app 卡片；真实 hook 或日志状态到来后再同步成 active 状态。右侧面板显示设备输出状态，Wio 默认接收所有 agent 聚合后的状态。
-
-卸载 hooks：
-
-```bash
-npm run uninstall:hooks
-```
-
-## 桌面桥行为
-
-`npm start` 会启动 Electron 桌面程序。窗口负责 BLE 连接和日/夜主题切换，后台仍会启动本地 HTTP 服务给 hooks/plugins 上报状态，并把运行端口写入 `~/.code-pet/runtime.json`。
-
-| Endpoint | 用途 |
+| 项 | 路径 |
 | --- | --- |
-| `/bridge` | 备用 Web Bluetooth 桥接 UI |
-| `/api/events` | SSE 状态流 |
-| `/api/petdex/manifest` | Petdex 形象 manifest 缓存代理 |
-| `/api/snapshot` | 当前状态快照 |
-| `/api/hook` | hook 上报入口 |
-| `/state` | 兼容型 hook/plugin 上报入口 |
-| `/api/test-state?state=working` | 手动测试状态 |
+| Hook 配置 | `~/.cursor/hooks.json` |
+| Hook 脚本 | `src/hooks/cursor-hook.js` |
+| 安装逻辑 | `src/scripts/install-hooks.js` → `registerCursor()` |
 
-默认端口是 `17384`，可以通过环境变量或参数修改：
+### Hook 事件（已注册）
 
-```bash
-CODE_PET_PORT=17385 npm start
-npm start -- --port 17385
-```
+`sessionStart` · `sessionEnd` · `beforeSubmitPrompt` · `preToolUse` · `postToolUse` · `postToolUseFailure` · `subagentStart` · `subagentStop` · `preCompact` · `afterAgentThought` · `stop`
 
-旧网页桥仍可备用启动：
+### 额外状态来源（无需 hook 也能部分工作）
 
-```bash
-npm run bridge:web
-```
+| 监听器 | 文件 | source 标识 |
+| --- | --- | --- |
+| Composer DB | `src/host/agent/cursor-composer-monitor.js` | `cursor-composer` |
+| Transcript | `src/host/agent/cursor-transcript-monitor.js` | `cursor-transcript` |
 
-开发桌面 UI 时使用热更新模式：
+### Cursor hook → 桌宠状态
 
-```bash
-npm run dev
-```
-
-`npm run dev` 会监听 `src/desktop` 和 `src/host`。修改桌面 HTML、renderer 或共享 CSS 时会自动刷新窗口；修改主进程、preload 或 host 逻辑时会自动重启 Electron。`npm start` 仍然是普通运行模式，不做热更新。
-
-跨平台打包：
-
-```bash
-npm run package:current
-npm run package:mac
-npm run package:linux
-npm run package:win
-npm run package:all
-```
-
-打包入口是 `src/scripts/package.js`，内部调用 Electron Packager，默认先执行 `npm run check`，产物输出到 `dist/`。需要指定架构时可追加参数，例如 `npm run package:mac -- --arch arm64`。当前脚本生成未签名应用包，正式分发仍需平台侧签名、公证或安装器流程。
-
-如果连接时出现 `User cancelled the requestDevice() chooser`：
-
-- 先完全退出当前 Vibe Pet 窗口，再重新运行 `npm start`，避免旧桌面进程仍在使用旧代码。
-- 确认 Wio Terminal、ESP-AI Mini Ext 或 SenseCAP Indicator 已上电，并正在广播 `VibePet-Wio` / `VibePet-ESP-AI-Mini-TFT` / `VibePet-ESP-AI-Mini` / `VibePet-SenseCAP-Indicator`。
-- 桌面桥会持续扫描附近 BLE 设备，名字匹配 Vibe Pet 的设备会标记为「推荐」。如果选择了其他 BLE 设备，通常会提示它没有 Vibe Pet BLE 服务。
-
-## 设备端
-
-### Wio Terminal
-
-Wio Terminal 是主显示端，作为 BLE 外设广播 `VibePet-Wio`，接收状态 JSON 后在 TFT 上绘制桌宠。按下五向键中键可以本地循环测试状态。
-
-### ESP-AI Mini Ext
-
-[ESP-AI Mini Ext](https://espai.fun/open/pcb/mini-ext/1.0.0/) 是基于 ESP32-S3 的 AI 开发套件。TFT 版固件广播 `VibePet-ESP-AI-Mini-TFT`，在屏幕上绘制桌宠，并用板载 WS2812 显示状态颜色；状态灯版固件广播 `VibePet-ESP-AI-Mini`，通过 GPIO8 读取电池电压。
-
-固定引脚：
-
-| 功能 | GPIO |
+| Hook 事件 | 状态 |
 | --- | --- |
-| WS2812 | 18 |
-| KEY | 10 |
-| BAT_ADC | 8 |
-| TFT_MOSI | 42 |
-| TFT_SCLK | 39 |
-| TFT_CS | 13 |
-| TFT_DC | 7 |
-| TFT_BL | 3，低电平点亮 |
+| `sessionStart` | `idle` |
+| `sessionEnd` | `sleeping` |
+| `beforeSubmitPrompt` | `thinking` |
+| `preToolUse` | `working` |
+| `postToolUse` | `thinking` |
+| `postToolUseFailure` | `error` |
+| `subagentStart` | `juggling` |
+| `preCompact` | `sweeping` |
+| `stop` | `attention` |
 
-2.4 寸 TFT 按官方配置使用 `ST7789_2_DRIVER`，TFT_eSPI `TFT_WIDTH=240`、`TFT_HEIGHT=320`，逻辑屏幕 `SCREEN_WIDTH=320`、`SCREEN_HEIGHT=240`。背光由 `backlight_control.h/.cpp` 管理，启动时调用 `initBacklight()` 和 `setBacklightOn()`。
+### 改 Cursor 集成时
 
-烧录：
+- 改事件映射：优先改 `src/hooks/cursor-hook.js` 的 `HOOK_TO_STATE`
+- 增删 hook 事件：同步改 `install-hooks.js` 的 `CURSOR_EVENTS`
+- 不要破坏 `beforeSubmitPrompt` 需返回 `{"continue":true}` 的行为
+
+## 给 Codex 的工作说明
+
+### 集成位置
+
+| 项 | 路径 |
+| --- | --- |
+| Hook 配置 | `~/.codex/hooks.json` |
+| Feature 开关 | `~/.codex/config.toml` → `[features] hooks = true` |
+| Hook 脚本 | `src/hooks/codex-hook.js` |
+| JSONL 监听 | `src/host/agent/codex-log-monitor.js` |
+
+### Hook 事件（已注册）
+
+`SessionStart` · `UserPromptSubmit` · `PreToolUse` · `PermissionRequest` · `PostToolUse` · `Stop`
+
+### JSONL 回退
+
+- 路径：`~/.codex/sessions/**/rollout-*.jsonl`
+- 当 official hook 未覆盖或延迟时，由 `CodexLogMonitor` 补状态
+- 已被 official hook 覆盖的事件见 `state-hub.js` 中 `CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS`
+
+### Codex hook → 桌宠状态
+
+| Hook 事件 | 状态 |
+| --- | --- |
+| `SessionStart` | `idle` |
+| `UserPromptSubmit` | `thinking` |
+| `PreToolUse` | `working` |
+| `PermissionRequest` | `notification` |
+| `PostToolUse` | `thinking` |
+| `Stop` | `attention` |
+
+### JSONL 常见事件 → 状态
+
+| JSONL 事件 | 状态 |
+| --- | --- |
+| `event_msg:task_started` | `thinking` |
+| `response_item:function_call` | `working` |
+| `event_msg:task_complete` | `attention` → `idle` |
+| `event_msg:context_compacted` | `sweeping` |
+| 权限相关 | `notification` |
+
+### 改 Codex 集成时
+
+- Hook 映射：`src/hooks/codex-hook.js` 的 `EVENT_TO_STATE`
+- JSONL 映射：`src/host/agent/codex-log-monitor.js`
+- 安装后用户可能需在 Codex CLI 执行 `/hooks` 并批准新命令
+
+## 其他 Agent 集成
+
+`npm install` / `npm start` / `npm run dev` 会自动调用 `install-hooks.js`。未安装对应 agent 时跳过。
+
+| Agent | 方式 | 配置位置 | agentId |
+| --- | --- | --- | --- |
+| Windsurf | hooks | `~/.codeium/windsurf/hooks.json` | `windsurf` |
+| Claude CLI / Claude Code | hooks | `~/.claude/settings.json` | `claude-code` |
+| Gemini CLI | hooks | `~/.gemini/settings.json` | `gemini-cli` |
+| Copilot CLI | hooks | `~/.copilot/hooks/hooks.json` 或 `$COPILOT_HOME/...` | `copilot-cli` |
+| CodeBuddy | hooks | `~/.codebuddy/settings.json` | `codebuddy` |
+| Kimi Code CLI | hooks | `~/.kimi/config.toml` | `kimi-cli` |
+| Qwen Code | hooks | `~/.qwen/settings.json` | `qwen-code` |
+| Qoder | hooks | `~/.qoder/settings.json` | `qoder` |
+| Reasonix CLI | hooks | `~/.reasonix/settings.json` | `reasonix-cli` |
+| OpenClaw | plugin | `~/.openclaw/openclaw.json` | — |
+| opencode | plugin | `~/.config/opencode/opencode.json` | — |
+| Hermes Agent | plugin | `~/.hermes/plugins/code-pet` | — |
+
+通用 CLI 走 `src/hooks/agent-hook.js`，用法：`node agent-hook.js <agentId> <event>`
+
+新增 agent：在 `install-hooks.js` 的 `runAll()` 注册，必要时加专用 hook 脚本。
+
+## 本地 Bridge API
+
+| Endpoint | 方法 | 用途 |
+| --- | --- | --- |
+| `/api/hook` | POST | 主上报入口 |
+| `/state` | POST | 兼容上报入口 |
+| `/api/snapshot` | GET | 当前聚合状态 |
+| `/api/device-snapshot` | GET | 硬件/Wi-Fi 用紧凑快照 |
+| `/api/events` | GET | SSE 状态流 |
+| `/api/petdex/manifest` | GET | Petdex 角色 manifest 代理 |
+| `/api/protocol` | GET | 协议元信息 |
+| `/api/test-state?state=working` | GET | 手动测试 |
+| `/bridge` | GET | Web Bluetooth 备用 UI |
+
+Hook 查找端口顺序：`CODE_PET_PORT` → `~/.code-pet/runtime.json` → `17384`–`17388`
+
+完整 payload 与字段说明：[docs/ide-protocol.md](docs/ide-protocol.md) / [中文](docs/ide-protocol.zh-CN.md)
+
+## 桌宠状态
+
+| 状态 | 含义 |
+| --- | --- |
+| `idle` | 已打开，无活跃任务 |
+| `thinking` | 读上下文 / 规划 |
+| `working` | 调工具 / 改文件 / 跑命令 |
+| `typing` | 输出文本 |
+| `building` | 多工作流或构建类任务 |
+| `juggling` | 多子任务 / subagent |
+| `attention` | 本轮完成，需轻微关注 |
+| `notification` | 需审批 / 授权 |
+| `error` | 出错 |
+| `sweeping` | 压缩 / 清理上下文 |
+| `sleeping` | 会话结束或不活跃 |
+
+聚合逻辑在 `src/host/state-hub.js`；硬件包格式在 `src/host/protocol.js`。
+
+## 硬件目标
+
+### 应用内烧录支持的目录
+
+| 目录 | 设备 | BLE 广播名 |
+| --- | --- | --- |
+| `wio-terminal-code-pet` | Wio Terminal | `VibePet-Wio` |
+| `esp-ai-mini-ext-tft-code-pet` | ESP-AI Mini Ext TFT | `VibePet-ESP-AI-Mini-TFT` |
+| `sensecap-indicator-code-pet` | SenseCAP Indicator | `VibePet-SenseCAP-Indicator` |
+
+桌面端扫描前缀见 `src/host/protocol.js` 的 `DEVICE_NAME_PREFIXES`（含 `VibePet-*` 与旧名 `CodePet-*`）。
+
+ESP 目标烧录 `main.bin` @ `0x0`（需合并镜像）；Wio 走 Arduino CLI 兜底。打包全部 `main.bin`：
 
 ```bash
-cd src/firmware/esp-ai-mini-ext-tft-code-pet
-pio run -t upload
-
-cd src/firmware/esp-ai-mini-ext-status
-pio run -t upload
+npm run firmware:package
 ```
 
-### SenseCAP Indicator
+### esp-display-code-pet（Contributor 板型）
 
-[SenseCAP Indicator](https://wiki.seeedstudio.com/cn/Sensor/SenseCAP/SenseCAP_Indicator/Get_started_with_SenseCAP_Indicator/) 是 Seeed 的 4 英寸 480×480 电容触控屏开发板，由 ESP32-S3 与 RP2040 双 MCU 驱动，支持 Wi-Fi / Bluetooth 5.0 LE。显示端使用 ST7701S RGB 接口，I2C 扩展芯片 PCA9535 控制 CS / RESET，背光 GPIO45。
-
-固件工程目录：`src/firmware/sensecap-indicator-code-pet`。BLE 广播名 `VibePet-SenseCAP-Indicator`，在屏幕上用 LVGL 绘制桌宠。
-
-桌面端应用内烧录不调用 PlatformIO。每个硬件目录下放置可直接烧录的 `main.bin` 后，ESP 目标会通过内置 JS esptool 从 `0x0` 写入该文件；因此 ESP32/ESP8266 需要 bootloader、partition 和 app 分段时，`main.bin` 应该是合并后的镜像。Wio Terminal 这类非 ESP 目标走 Arduino CLI 兜底。
-
-### ESP32 / ESP8266 带屏设备
-
-`src/firmware/esp-display-code-pet` 是多设备显示固件工程。ESP32/S3 设备通过 BLE 接收桌面端下发的 compact packet；ESP8266 没有 BLE，使用 Wi-Fi 轮询桌面桥 `/api/device-snapshot`。该快照包含每个桌宠的状态、会话标题、角色 slug、角色显示名、角色类型和 spritesheet URL，硬件端按同一状态机播放动作。
-
-ESP-AI Common 3.0.0 使用 [官方开发板资料](https://espai.fun/open/pcb/common/3.0.0/) 中的 TFT/状态灯能力。ESP-AI DIY ESP32S3 使用 [DIY 硬件接线](https://espai.fun/guide/1e7b8i8e/) 中的开放平台扩展引脚：OLED `SCL=38`、`SDA=39`，TFT `MOSI=39`、`SCLK=38`、`CS=9`、`DC=13`，WS2812 状态灯 `IO46`。
-
-开发用 PlatformIO 环境：
+多环境 PlatformIO 工程，共享 `src/main.cpp`。ESP32/S3 用 BLE；ESP8266 无 BLE，轮询 `/api/device-snapshot`。
 
 | 环境 | 设备 |
 | --- | --- |
 | `esp_ai_common_3_tft` | ESP-AI Common 3.0.0 TFT |
 | `esp_ai_diy_esp32s3_oled` | ESP-AI DIY ESP32S3 OLED |
-| `m5stack_core2` | M5Stack Core2 |
-| `m5stickc_plus2` | M5StickC Plus2 |
-| `m5stack_cardputer` | M5Stack Cardputer |
-| `m5stack_atoms3` | M5Stack AtomS3 |
-| `lilygo_t_display` | LILYGO T-Display ESP32 |
-| `lilygo_t_display_s3` | LILYGO T-Display S3 |
-| `heltec_wifi_kit_32` | Heltec WiFi Kit 32 |
-| `heltec_wifi_kit_8` | Heltec WiFi Kit 8 |
-| `wemos_d1_mini_oled` | WEMOS D1 mini + OLED Shield |
-
-示例：
+| `m5stack_core2` / `m5stack_cores3` | M5Stack Core2 / CoreS3 |
+| `m5stickc_plus2` / `m5stack_cardputer` / `m5stack_atoms3` | M5 系列 |
+| `lilygo_t_display` / `lilygo_t_display_s3` | LILYGO T-Display |
+| `heltec_wifi_kit_32` / `heltec_wifi_kit_8` | Heltec |
+| `wemos_d1_mini_oled` | WEMOS D1 mini + OLED |
 
 ```bash
 pio run -d src/firmware/esp-display-code-pet -e m5stack_core2 -t upload
-pio run -d src/firmware/esp-display-code-pet -e lilygo_t_display_s3 -t upload
 ```
 
-## 支持的 Agent
+硬件协议：[docs/hardware-protocol.md](docs/hardware-protocol.md)
 
-`npm run install:hooks` 会默认尝试安装/同步这些集成。已存在对应配置目录时会写入；未安装或未初始化的 agent 会跳过。
+## 开发约定
 
-| Agent | 集成方式 | 默认配置位置 |
-| --- | --- | --- |
-| Codex | hooks + JSONL fallback | `~/.codex/hooks.json` |
-| Windsurf | Cascade hooks | `~/.codeium/windsurf/hooks.json` |
-| Claude CLI / Claude Code | hooks | `~/.claude/settings.json` |
-| Gemini CLI | hooks | `~/.gemini/settings.json` |
-| Copilot CLI | hooks | `~/.copilot/hooks/hooks.json` 或 `$COPILOT_HOME/hooks/hooks.json` |
-| CodeBuddy | hooks | `~/.codebuddy/settings.json` |
-| Kimi Code CLI | hooks | `~/.kimi/config.toml` |
-| Qwen Code | hooks | `~/.qwen/settings.json` |
-| OpenClaw | plugin | `~/.openclaw/openclaw.json` |
-| opencode | plugin | `~/.config/opencode/opencode.json` |
-| Qoder | hooks | `~/.qoder/settings.json` |
-| Hermes Agent | plugin | `~/.hermes/plugins/code-pet` |
-| Reasonix CLI | hooks | `~/.reasonix/settings.json` |
+1. **最小改动**：只改任务相关文件；hook、StateHub、protocol、固件状态机需保持一致。
+2. **复用现有模式**：新 agent 参照 `agent-hook.js` + `install-hooks.js`；新板型参照 `esp-display-code-pet/platformio.ini`。
+3. **状态单一来源**：规范化状态只通过 `protocol.js` 的 `normalizeState()`；硬件包只通过 `toDevicePacket()`。
+4. **会话隔离**：每个真实会话用独立 `sessionId`，key 为 `agentId:sessionId`。
+5. **隐私边界**：hook 可上报本地 title/短 output；硬件只收紧凑 display 字段（见协议文档）。
+6. **不要提交**：`.env`、密钥、`node_modules/`、`dist/` 产物。
+7. **检查**：改完跑 `npm run check`；涉及 UI 用 `npm run dev` 验证。
 
-Cursor hook 仍然保留，因为它是最初项目参考实现的一部分，默认写入 `~/.cursor/hooks.json`。Windsurf 使用 Cascade Hooks 的 user-level 配置，默认写入 `~/.codeium/windsurf/hooks.json`。
+## 常见任务入口
 
-## 状态映射
-
-| 上游事件 | 桌宠状态 |
+| 任务 | 主要文件 |
 | --- | --- |
-| Codex `event_msg:task_started`, Cursor `beforeSubmitPrompt`, Windsurf `pre_user_prompt` | `thinking` |
-| Codex `response_item:function_call`, Cursor `preToolUse`, Windsurf `pre_run_command` / `pre_write_code` | `working` |
-| 多个活动会话 | `juggling` / `building` |
-| Codex 权限请求或权限启发式 | `notification` |
-| Cursor `postToolUseFailure` | `error` |
-| Codex `event_msg:task_complete`, Cursor `stop` | `attention` 后自动回到 `idle` |
-| compact 上下文 | `sweeping` |
+| 桌面 UI / BLE / 烧录 | `src/desktop/main.js`, `renderer.js`, `preload.js` |
+| 浮动桌宠 | `src/desktop/pet-overlay.js`, `pet-overlay.html` |
+| 状态聚合 | `src/host/state-hub.js` |
+| HTTP bridge | `src/host/index.js` |
+| Hook 安装 | `src/scripts/install-hooks.js` |
+| 打包发布 | `src/scripts/package-installers.js`, `electron-builder.json` |
+| 固件动画/状态机 | 各 `src/firmware/*/src/main.cpp` |
 
-协议细节见 [docs/protocol.md](docs/protocol.md)。
+## 文档索引
 
-## 为什么使用桌面桥
-
-电脑侧直接用 Node 控制 BLE 在 macOS / Linux / Windows 上依赖差异很大。现在默认采用 Electron 桌面桥：Node 主进程负责 agent 状态采集、本地 hook 服务和端口写入，桌面窗口负责 BLE 写入。这样不用依赖外部浏览器标签页，连接状态也更像一个常驻桌面程序。备用 Web 桥仍保留，方便排查兼容问题。
+| 文档 | 内容 |
+| --- | --- |
+| [README.zh-CN.md](README.zh-CN.md) | 用户向介绍 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献流程与打包 |
+| [docs/protocol.md](docs/protocol.md) | 协议总览 |
+| [docs/ide-protocol.md](docs/ide-protocol.md) | IDE/Agent 上报协议 |
+| [docs/hardware-protocol.md](docs/hardware-protocol.md) | BLE/Wi-Fi 硬件协议 |
+| [src/firmware/README.md](src/firmware/README.md) | 固件目录说明 |
