@@ -2,7 +2,7 @@
 
 const MANIFEST_URL = "https://petdex.dev/api/manifest";
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 10000;
+const REQUEST_TIMEOUT_MS = 60000;
 
 let cache = null;
 let cacheAt = 0;
@@ -50,6 +50,11 @@ async function fetchManifest() {
     });
     if (!response.ok) throw new Error(`Petdex manifest ${response.status}`);
     return response.json();
+  } catch (err) {
+    if (err && (err.name === "AbortError" || err.code === "ABORT_ERR")) {
+      throw new Error(`Petdex manifest timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
   } finally {
     clearTimeout(timeout);
   }
